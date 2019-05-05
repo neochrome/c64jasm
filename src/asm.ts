@@ -15,37 +15,7 @@ interface Error {
     msg: string
 }
 
-const filterMap = (lst, mf) => {
-    return lst.map((l,i) => mf(l, i)).filter(elt => elt !== null);
-}
-
-function tryParseInt(s): number | null {
-    if (s.length < 1) {
-        return null
-    }
-    if (s[0] == '$') {
-        const v = parseInt(s.slice(1), 16);
-        return isNaN(v) ? null : v
-    } else {
-        const v = parseInt(s, 10);
-        return isNaN(v) ? null : v
-    }
-}
-
-function tryParseSymbol(s): string | null {
-    const m = /^([a-zA-Z_]+[0-9a-zA-Z_]*)$/.exec(s)
-    if (m !== null) {
-        return m[1];
-    }
-    return null
-}
-
-function toHex(num) {
-    const h = num.toString(16)
-    return num < 16 ? `0${h}` : `${h}`
-}
-
-interface Label {
+interface LabelAddr {
     addr: number,
     loc: SourceLoc
 }
@@ -53,23 +23,23 @@ interface Label {
 class SeenLabels {
     seenLabels = new Map<string, ast.Label>();
 
-    clear () {
+    clear() {
         this.seenLabels.clear();
     }
 
-    find = (name) => {
+    find(name: string) {
         return this.seenLabels.get(name);
     }
 
-    declare = (name, sym) => {
+    declare(name: string, sym: ast.Label) {
         this.seenLabels.set(name, sym);
     }
 }
 
 class Labels {
-    labels = {}
+    labels: {[index: string]: LabelAddr} = {}
     macroCount = 0
-    labelPrefix = []
+    labelPrefix: string[] = []
 
     startPass(): void {
         this.macroCount = 0;
@@ -92,7 +62,7 @@ class Labels {
         this.labelPrefix.pop();
     }
 
-    makeScopePrefix(maxDepth): string {
+    makeScopePrefix(maxDepth: number): string {
         if (this.labelPrefix.length === 0) {
             return ''
         }
@@ -111,7 +81,7 @@ class Labels {
         return `${prefix}/${name}`
     }
 
-    prefixName(name: string, depth): string {
+    prefixName(name: string, depth: number): string {
         const prefix = this.makeScopePrefix(depth);
         if (prefix == '') {
             return name;
@@ -120,7 +90,7 @@ class Labels {
     }
 
     add(name: string, addr: number, loc: SourceLoc): void {
-        const lbl: Label = {
+        const lbl: LabelAddr = {
             addr,
             loc
         }
@@ -129,11 +99,11 @@ class Labels {
     }
 
     // Find a label with fully specified scope path
-    findFq(nameFq): Label {
+    findFq(nameFq: string): LabelAddr {
         return this.labels[nameFq];
     }
 
-    find(name: string): Label {
+    find(name: string): LabelAddr | undefined {
         const scopeDepth = this.labelPrefix.length;
         if (scopeDepth == 0) {
             return this.labels[name];
@@ -158,11 +128,11 @@ class SymbolTab<S> {
     symbols: Map<string, S> = new Map();
 
     add = (name: string, s: S) => {
-        this.symbols[name] = s
+        this.symbols.set(name, s);
     }
 
-    find (name: string): S {
-        return this.symbols[name]
+    find (name: string): S|undefined {
+        return this.symbols.get(name);
     }
 }
 
@@ -236,15 +206,15 @@ class Scopes {
         this.labels.add(name, addr, loc);
     }
 
-    findLabel(name: string): Label {
+    findLabel(name: string): LabelAddr | undefined {
         return this.labels.find(name);
     }
 
-    findLabelFq(name: string): Label {
+    findLabelFq(name: string): LabelAddr {
         return this.labels.findFq(name);
     }
 
-    findSeenLabel(name: string): ast.Label {
+    findSeenLabel(name: string): ast.Label|undefined {
         return this.seenLabels.find(this.labels.currentPrefixName(name));
     }
 
@@ -299,10 +269,14 @@ interface BranchOffset {
     loc: SourceLoc;
 }
 
-const runBinop = (a: ast.Literal, b: ast.Literal, f) => {
+const runBinop = (a: ast.Literal, b: ast.Literal, f: (a: number, b: number) => number | boolean) => {
     // TODO combine a&b locs
     // TODO a.type, b.type must be literal
-    return ast.mkLiteral(f(a.lit, b.lit), a.loc);
+    const res = f(a.lit as number, b.lit as number);
+    if (typeof res == 'boolean') {
+        return ast.mkLiteral(res ? 1 : 0, a.loc);
+    }
+    return ast.mkLiteral(res, a.loc);
 }
 
 class Assembler {
@@ -329,7 +303,7 @@ class Assembler {
       return Buffer.from([1, 8].concat(this.binary))
     }
 
-    parse (filename, loc) {
+    parse (filename: string, loc: SourceLoc | undefined) {
         return this.parseCache.parse(filename, loc, ((fname, loc) => this.guardedReadFileSync(fname, loc)));
     }
 
@@ -338,7 +312,7 @@ class Assembler {
     // intentionally.  We don't want it completely cached because changes to plugin
     // code must trigger a recompile and in that case we want the plugins really
     // reloaded too.
-    requirePlugin(fname) {
+    requirePlugin(fname: string) {
         const p = this.pluginCache.get(fname);
         if (p !== undefined) {
             return p;
@@ -451,7 +425,7 @@ class Assembler {
         }
     }
 
-    evalExpr (node): ast.Expr {
+    evalExpr (node: ast.Expr): ast.Expr {
         switch (node.type) {
             case 'binary': {
                 const left = this.evalExpr(node.left);
@@ -493,9 +467,10 @@ class Assembler {
                 return node;
             }
             case 'array': {
+                // TODO node type is wrong here
                 return {
                     ...node,
-                    values: node.values.map(v => this.evalExpr(v))
+                    values: node.values.map((v: ast.Expr) => this.evalExpr(v))
                 }
             }
             case 'ident': {
@@ -524,7 +499,8 @@ class Assembler {
                 return ast.mkLiteral(lbl.addr, lbl.loc);
             }
             case 'member': {
-                const findObjectField = (props, prop) => {
+                // TODO any
+                const findObjectField = (props: any, prop: any) => {
                     for (let pi = 0; pi < props.length; pi++) {
                         const p = props[pi]
                         // TODO THIS IS SUPER MESSY!! and doesn't handle errors
@@ -695,7 +671,7 @@ class Assembler {
         return true;
       }
 
-    setPC (valueExpr): void {
+    setPC (valueExpr: ast.Expr): void {
         const { lit } = this.evalExpr(valueExpr);
         if (this.codePC > lit) {
             // TODO this is not great.  Actually need to track which ranges of memory have something in them.
@@ -706,7 +682,7 @@ class Assembler {
         }
     }
 
-    guardedReadFileSync(fname, loc): Buffer {
+    guardedReadFileSync(fname: string, loc: SourceLoc | undefined): Buffer {
         try {
             return readFileSync(fname);
         } catch (err) {
@@ -747,7 +723,7 @@ class Assembler {
         }
     }
 
-    withLabelScope (name: string, compileScope): void {
+    withLabelScope (name: string, compileScope: () => void): void {
         this.pushVariableScope();
         this.scopes.pushLabelScope(name);
         compileScope();
@@ -755,7 +731,7 @@ class Assembler {
         this.popVariableScope();
     }
 
-    withMacroExpandScope (name: string, compileScope): void {
+    withMacroExpandScope (name: string, compileScope: () => void): void {
         this.pushVariableScope();
         this.scopes.pushMacroExpandScope(name);
         compileScope();
@@ -763,7 +739,7 @@ class Assembler {
         this.popVariableScope();
     }
 
-    emit8or16(v, bits) {
+    emit8or16(v: number, bits: number) {
         if (bits == 8) {
             this.emit(v);
             return;
@@ -771,7 +747,7 @@ class Assembler {
         this.emit16(v);
     }
 
-    emitData (exprList: ast.Expr[], bits) {
+    emitData (exprList: ast.Expr[], bits: number) {
         for (let i = 0; i < exprList.length; i++) {
             const e = this.evalExpr(exprList[i]);
             if (e.type === 'literal') {
@@ -787,20 +763,20 @@ class Assembler {
         }
     }
 
-    makeFunction (pluginFunc, loc) {
+    makeFunction (pluginFunc: Function, loc: SourceLoc) {
         return {
             type: 'function',
             func: (args) => {
                 const res = pluginFunc({
                     readFileSync,
-                    resolveRelative: fn => this.makeSourceRelativePath(fn)
+                    resolveRelative: (fn: string) => this.makeSourceRelativePath(fn)
                 }, ...args);
                 return ast.objectToAst(res, loc);
             }
         }
     }
 
-    bindFunction (name: ast.Ident, pluginModule, loc) {
+    bindFunction (name: ast.Ident, pluginModule, loc: SourceLoc) {
         this.variables.add(name.name, {
             arg: {
                 ident: name
@@ -923,9 +899,11 @@ class Assembler {
                 const { name, args } = node;
                 const macro = this.scopes.findMacro(name.name);
 
-                if (!macro) {
+                if (macro == undefined) {
                     this.error(`Undefined macro '${name.name}'`, name.loc);
+                    return; // TODO why doesn't this.error never return type work here?
                 }
+
                 if (macro.args.length !== args.length) {
                     this.error(`Macro '${name.name}' declared with ${macro.args.length} args but called here with ${args.length}`,
                         name.loc);
@@ -1094,7 +1072,7 @@ class Assembler {
         return path.join(path.dirname(curSource), filename);
     }
 
-    assemble (filename, loc: SourceLoc | null): void {
+    assemble (filename: string, loc: SourceLoc | undefined): void {
         try {
             const astLines = this.parse(filename, loc);
             this.assembleLines(astLines);
@@ -1148,7 +1126,7 @@ class Assembler {
                 )
             }
         };
-        const addPlugin = (name, handler) => {
+        const addPlugin = (name: string, handler) => {
             this.variables.add(name, {
                 arg: {
                     ident: ast.mkIdent(name, null) // TODO loc?
@@ -1165,7 +1143,7 @@ class Assembler {
     }
 }
 
-export function assemble(filename) {
+export function assemble(filename: string) {
     const asm = new Assembler();
     asm.pushSource(filename);
     asm.pushVariableScope();
