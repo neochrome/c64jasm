@@ -73,15 +73,6 @@
     return [head].concat(extractList(tail, index));
   }
 
-  function binop(op, left, right) {
-    return {
-      type: 'binary',
-      op,
-      left,
-      right
-    }
-  }
-
   function loc() {
     return { ...location(), source: options.source }
   }
@@ -238,11 +229,11 @@ mnemonic = ident:identNoWS __  { return ident; }
 imm = '#' lh:loOrHi? expr:expr {
   if (lh !== null) {
     if (lh === 'lo') {
-      return binop('&', expr, ast.mkLiteral(255, loc()));
+      return ast.mkBinaryOp('&', expr, ast.mkLiteral(255, loc(), loc()));
     }
     const lit8 = ast.mkLiteral(8, loc());
     const lit255 = ast.mkLiteral(255, loc());
-    return binop('&', binop('>>', expr, lit8), lit255);
+    return ast.mkBinaryOp('&', ast.mkBinaryOp('>>', expr, lit8, loc()), lit255, loc());
   }
   return expr
 }
@@ -257,62 +248,62 @@ expr = lastExpr
 
 multiplicative = first:unaryExpression rest:((STAR / DIV / MOD) unaryExpression)* {
     return rest.reduce(function(memo, curr) {
-      return binop(curr[0], memo, curr[1]);
+      return ast.mkBinaryOp(curr[0], memo, curr[1], loc());
     }, first);
   }
 / primary
 
 additive = first:multiplicative rest:((PLUS / MINUS) multiplicative)* {
     return rest.reduce(function(memo, curr) {
-      return binop(curr[0], memo, curr[1]);
+      return ast.mkBinaryOp(curr[0], memo, curr[1], loc());
     }, first);
   }
 
 shift = first:additive rest:((LEFT / RIGHT) additive)* {
     return rest.reduce(function(memo, curr) {
-      return binop(curr[0], memo, curr[1]);
+      return ast.mkBinaryOp(curr[0], memo, curr[1], loc());
     }, first);
   }
 
 relational = first:shift rest:((LE / GE / LT / GT) shift)* {
     return rest.reduce(function(memo, curr) {
-      return binop(curr[0], memo, curr[1]);
+      return ast.mkBinaryOp(curr[0], memo, curr[1], loc());
     }, first);
   }
 
 equality = first:relational rest:((EQUEQU / BANGEQU) relational)* {
     return rest.reduce(function(memo, curr) {
-      return binop(curr[0], memo, curr[1]);
+      return ast.mkBinaryOp(curr[0], memo, curr[1], loc());
     }, first);
   }
 
 andExpr = first:equality rest:(AND equality)* {
     return rest.reduce(function(memo, curr) {
-      return binop(curr[0], memo, curr[1]);
+      return ast.mkBinaryOp(curr[0], memo, curr[1], loc());
     }, first);
   }
 
 xorExpr = first:andExpr rest:(HAT andExpr)* {
     return rest.reduce(function(memo, curr) {
-      return binop(curr[0], memo, curr[1]);
+      return ast.mkBinaryOp(curr[0], memo, curr[1], loc());
     }, first);
   }
 
 orExpr = first:xorExpr rest:(OR xorExpr)* {
     return rest.reduce(function(memo, curr) {
-      return binop(curr[0], memo, curr[1]);
+      return ast.mkBinaryOp(curr[0], memo, curr[1], loc());
     }, first);
   }
 
 boolAndExpr = first:orExpr rest:(ANDAND orExpr)* {
     return rest.reduce(function(memo, curr) {
-      return binop(curr[0], memo, curr[1]);
+      return ast.mkBinaryOp(curr[0], memo, curr[1], loc());
     }, first);
   }
 
 boolOrExpr = first:boolAndExpr rest:(OROR boolAndExpr)* {
     return rest.reduce(function(memo, curr) {
-      return binop(curr[0], memo, curr[1]);
+      return ast.mkBinaryOp(curr[0], memo, curr[1], loc());
     }, first);
   }
 
@@ -365,7 +356,7 @@ primary
 
 num =
    "$"i hex:$hexdig+ __     { return parseInt(hex, 16); }
- / "%" binary:$zeroone+ __ { return parseInt(binary, 2); }
+ / "%" binary:$zeroone+ __  { return parseInt(binary, 2); }
  / digs:$digit+      __     { return parseInt(digs, 10); }
 
 alpha = [a-zA-Z_]

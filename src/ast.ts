@@ -36,6 +36,13 @@ export interface Unary extends Node {
   expr: Expr;
 }
 
+export interface BinaryOp extends Node {
+  type: 'binary';
+  op: string;
+  left: Expr;
+  right: Expr;
+}
+
 export function mkLiteral(lit: number | string, loc: SourceLoc, unresolved = null): Literal {
   return { type: 'literal', lit, loc, unresolved };
 }
@@ -44,13 +51,18 @@ export function mkIdent(name: string, loc: SourceLoc): Ident {
   return { type: 'ident', name, loc };
 }
 
-export function mkUnary(op: string, expr: Expr, loc: SourceLoc): Expr {
+export function mkUnary(op: string, expr: Expr, loc: SourceLoc): Unary {
   return { type: 'unary', op, expr, loc };
+}
+
+export function mkBinaryOp(op: string, left: Expr, right: Expr, loc: SourceLoc): BinaryOp {
+  return { type: 'binary', op, left, right, loc };
 }
 
 export enum DataSize { Byte, Word };
 
-export type Expr = any | Ident | Literal | Unary
+export type Expr = any | Ident | Literal | Unary | BinaryOp
+
 export type Stmt =
     StmtInsn
   | StmtSetPC
