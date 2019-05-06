@@ -264,6 +264,43 @@ function isTrueVal(cond: number | boolean): boolean {
     return (cond === true || cond != 0);
 }
 
+// Return a union of source locs (all locs must refer to the same source)
+function unionLocRange(locs: SourceLoc[]): SourceLoc {
+    let minOffset = Infinity;
+    let maxOffset = 0;
+
+    let minLoc = locs[0].start;
+    let maxLoc = locs[0].end;
+    const source = locs[0].source;
+
+    for (let i = 1; i < locs.length; i++) {
+        if (locs[i].start.offset < minOffset) {
+            minLoc = locs[i].start;
+            minOffset = minLoc.offset;
+        }
+        if (locs[i].end.offset > maxOffset) {
+            maxLoc = locs[i].end;
+            maxOffset = maxLoc.offset;
+        }
+
+    }
+    return {
+        start: minLoc,
+        end: maxLoc,
+        source: locs[0].source
+    };
+}
+
+function makeCompileLoc(filename: string) {
+    // SourceLoc can be undefined here if parse is executed out of AST
+    // (e.g., source file coming from CLI), so make up an error loc for it.
+    return {
+        source: filename,
+        start: { offset: 0, line: 0, column: 0 },
+        end: { offset: 0, line: 0, column: 0 }
+    };
+}
+
 interface BranchOffset {
     offset: number;
     loc: SourceLoc;
@@ -273,10 +310,11 @@ const runBinop = (a: ast.Literal, b: ast.Literal, f: (a: number, b: number) => n
     // TODO combine a&b locs
     // TODO a.type, b.type must be literal
     const res = f(a.lit as number, b.lit as number);
+    const aggregateLoc = unionLocRange([a.loc, b.loc]);
     if (typeof res == 'boolean') {
-        return ast.mkLiteral(res ? 1 : 0, a.loc);
+        return ast.mkLiteral(res ? 1 : 0, aggregateLoc);
     }
-    return ast.mkLiteral(res, a.loc);
+    return ast.mkLiteral(res, aggregateLoc);
 }
 
 class Assembler {
@@ -304,7 +342,8 @@ class Assembler {
     }
 
     parse (filename: string, loc: SourceLoc | undefined) {
-        return this.parseCache.parse(filename, loc, ((fname, loc) => this.guardedReadFileSync(fname, loc)));
+        const l = loc == undefined ? makeCompileLoc(filename) : loc;
+        return this.parseCache.parse(filename, loc, ((fname, _loc) => this.guardedReadFileSync(fname, l)));
     }
 
     // Cache plugin require's so that we fresh require() them only in the first pass.
@@ -312,7 +351,7 @@ class Assembler {
     // intentionally.  We don't want it completely cached because changes to plugin
     // code must trigger a recompile and in that case we want the plugins really
     // reloaded too.
-    requirePlugin(fname: string) {
+    requirePlugin(fname: string): any {
         const p = this.pluginCache.get(fname);
         if (p !== undefined) {
             return p;
@@ -682,11 +721,11 @@ class Assembler {
         }
     }
 
-    guardedReadFileSync(fname: string, loc: SourceLoc | undefined): Buffer {
+    guardedReadFileSync(fname: string, loc: SourceLoc): Buffer {
         try {
             return readFileSync(fname);
         } catch (err) {
-            this.error(`Couldn't open file '${fname}'`, loc);
+            return this.error(`Couldn't open file '${fname}'`, loc);
         }
     }
 
@@ -766,7 +805,7 @@ class Assembler {
     makeFunction (pluginFunc: Function, loc: SourceLoc) {
         return {
             type: 'function',
-            func: (args) => {
+            func: (args: ast.Literal[]) => {
                 const res = pluginFunc({
                     readFileSync,
                     resolveRelative: (fn: string) => this.makeSourceRelativePath(fn)
@@ -776,7 +815,7 @@ class Assembler {
         }
     }
 
-    bindFunction (name: ast.Ident, pluginModule, loc: SourceLoc) {
+    bindFunction (name: ast.Ident, pluginModule: any, loc: SourceLoc) {
         this.variables.add(name.name, {
             arg: {
                 ident: name
@@ -785,7 +824,7 @@ class Assembler {
         })
 }
 
-    bindPlugin (node, pluginModule) {
+    bindPlugin (node: ast.StmtLoadPlugin, pluginModule: any) {
         const moduleName = node.moduleName;
         // Bind default export as function
         if (typeof pluginModule == 'function') {
@@ -895,7 +934,7 @@ class Assembler {
                 break;
             }
             case 'callmacro': {
-                let argValues = [];
+                let argValues: ast.Literal[] = [];
                 const { name, args } = node;
                 const macro = this.scopes.findMacro(name.name);
 
@@ -911,17 +950,14 @@ class Assembler {
 
                 for (let argIdx = 0; argIdx < macro.args.length; argIdx++) {
                     const eres = this.evalExpr(args[argIdx]);
-                    argValues.push({
-                        type: 'value',
-                        value: eres
-                    });
+                    argValues.push(eres);
                 }
                 this.withMacroExpandScope(name.name, () => {
                     for (let argIdx = 0; argIdx < argValues.length; argIdx++) {
                         const argName = macro.args[argIdx].ident;
                         this.variables.add(argName.name, {
                             arg: { ident: argName },
-                            value: argValues[argIdx].value
+                            value: argValues[argIdx]
                         });
                     }
                     this.assembleLines(macro.body);
@@ -932,7 +968,7 @@ class Assembler {
                 const name = node.name;
                 const prevVariable = this.variables.find(name.name);
                 if (prevVariable) {
-                    this.error(`Variable '${name.name}' already defined`, node.loc);
+                    return this.error(`Variable '${name.name}' already defined`, node.loc);
                 }
                 const eres = this.evalExpr(node.value);
                 this.variables.add(name.name, {
@@ -944,8 +980,8 @@ class Assembler {
             case 'assign': {
                 const name = node.name;
                 const prevVariable = this.variables.find(name.name);
-                if (!prevVariable) {
-                    this.error(`Assignment to undeclared variable '${name.name}'`, node.loc);
+                if (prevVariable == undefined) {
+                    return this.error(`Assignment to undeclared variable '${name.name}'`, node.loc);
                 }
                 const lit: ast.Expr = this.evalExpr(node.value);
                 prevVariable.value = lit;
@@ -994,9 +1030,14 @@ class Assembler {
             }
         }
 
-        if (line.scopedStmts) {
+        const scopedStmts = line.scopedStmts;
+        if (scopedStmts != null) {
+            if (!line.label) {
+                // TODO this shouldn't be allowed..
+                throw new Error('ICE: line.label undefined DEBUG DEBUG');
+            }
             this.withLabelScope(line.label.name, () => {
-                this.assembleLines(line.scopedStmts);
+                this.assembleLines(scopedStmts);
             });
             return;
         }
@@ -1090,46 +1131,54 @@ class Assembler {
         }
     }
 
+    _requireLitType(e: ast.Literal, type: string): (any | never) {
+        if (typeof e.lit == type) {
+            return e.lit;
+        }
+        return this.error(`Expecting a ${type} value, got ${typeof e.lit}`, e.loc);
+    }
+
+    requireStringLit(e: ast.Literal): (string | never) { return this._requireLitType(e, 'string') as string; }
+    requireNumberLit(e: ast.Literal): (number | never) { return this._requireLitType(e, 'number') as number; }
+
     registerPlugins () {
         const json = {
             type: 'function',
-            func: (args) => {
-                const name = args[0].lit;
-                const fname = this.makeSourceRelativePath(name)
-                return ast.objectToAst(JSON.parse(readFileSync(fname, 'utf-8')), null);
+            func: (args: ast.Literal[]) => {
+                const name = this.requireStringLit(args[0]);
+                const fname = this.makeSourceRelativePath(name);
+                return ast.objectToAst(JSON.parse(readFileSync(fname, 'utf-8')), args[0].loc);
             }
         };
         const range = {
             type: 'function',
-            func: (args) => {
+            func: (args: ast.Literal[]) => {
+                const mergedLocRange = unionLocRange(args.map((a: ast.Node) => a.loc));
                 let start = 0;
                 let end = undefined;
                 if (args.length == 1) {
-                    end = args[0].lit
+                    end = this.requireNumberLit(args[0]);
                 } else if (args.length == 2) {
-                    start = args[0].lit
-                    end = args[1].lit
+                    start = this.requireNumberLit(args[0]);
+                    end = this.requireNumberLit(args[1]);
                 } else {
                     // TODO errors reporting via a context parameter
                     return null;
                 }
                 if (end == start) {
-                    return ast.objectToAst([], null);
+                    return ast.objectToAst([], mergedLocRange);
                 }
                 if (end < start) {
-                    this.error(`range(start, end) expression end must be greater than start, start=${start}, end=${end} given`, null)
+                    this.error(`range(start, end) expression end must be greater than start, start=${start}, end=${end} given`, mergedLocRange);
                     return null;
                 }
-                return ast.objectToAst(
-                    Array(end-start).fill(null).map((_,idx) => idx + start),
-                    null
-                )
+                return ast.objectToAst(Array(end-start).fill(null).map((_,idx) => idx + start), mergedLocRange);
             }
         };
-        const addPlugin = (name: string, handler) => {
+        const addPlugin = (name: string, handler: any) => {
             this.variables.add(name, {
                 arg: {
-                    ident: ast.mkIdent(name, null) // TODO loc?
+                    ident: ast.mkIdent(name, {} as SourceLoc) // TODO loc?!
                 },
                 value: handler
             })
@@ -1154,9 +1203,12 @@ export function assemble(filename: string) {
         asm.pushVariableScope();
         asm.startPass(pass);
 
-        asm.assemble(filename, null);
+        asm.assemble(filename, makeCompileLoc(filename));
         if (asm.anyErrors()) {
             return {
+                prg: Buffer.from([]),
+                labels: [],
+                debugInfo: undefined,
                 errors: asm.errors()
             }
         }

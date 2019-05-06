@@ -317,16 +317,16 @@ export function mkLoadPlugin(filename: string, moduleName: Ident, loc: SourceLoc
 }
 
 export function mkAsmLine(
-    label: Label = null,
-    stmt: Stmt = null,
-    scopedStmts: AsmLine[] = null,
+    label: Label | null ,
+    stmt: Stmt | null,
+    scopedStmts: AsmLine[] | null,
     loc: SourceLoc
   ): AsmLine {
   return { label, stmt, scopedStmts, loc };
 }
 
 // Convert a Javascript object to AST nodes
-export function objectToAst(o, loc) {
+export function objectToAst(o: any, loc: SourceLoc): any {
     if (Array.isArray(o)) {
       return {
         type: 'array',
