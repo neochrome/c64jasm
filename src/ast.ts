@@ -22,7 +22,6 @@ export interface Label extends Node {
 export interface Literal extends Node {
   type: 'literal',
   lit: number | string
-  unresolved: Label | Ident | null;
 }
 
 export interface Ident extends Node {
@@ -43,8 +42,19 @@ export interface BinaryOp extends Node {
   right: Expr;
 }
 
-export function mkLiteral(lit: number | string, loc: SourceLoc, unresolved = null): Literal {
-  return { type: 'literal', lit, loc, unresolved };
+export interface ExprArray extends Node {
+  type: 'array';
+  list: Expr[];
+}
+
+export interface CallFunc extends Node {
+  type: 'callfunc',
+  name: Ident;
+  args: Expr[];
+}
+
+export function mkLiteral(lit: number | string, loc: SourceLoc): Literal {
+  return { type: 'literal', lit, loc };
 }
 
 export function mkIdent(name: string, loc: SourceLoc): Ident {
@@ -59,9 +69,22 @@ export function mkBinaryOp(op: string, left: Expr, right: Expr, loc: SourceLoc):
   return { type: 'binary', op, left, right, loc };
 }
 
+export function mkExprArray(list: Expr[], loc: SourceLoc): ExprArray {
+  return { type: 'array', list, loc };
+}
+
+export function mkCallFunc(name: Ident, args: Expr[], loc: SourceLoc): CallFunc {
+  return {
+    type: 'callfunc',
+    name,
+    args: args == null ? [] : args,
+    loc
+  }
+}
+
 export enum DataSize { Byte, Word };
 
-export type Expr = any | Ident | Literal | Unary | BinaryOp
+export type Expr = Ident | Literal | Unary | BinaryOp | ExprArray | CallFunc
 
 export type Stmt =
     StmtInsn
@@ -76,7 +99,6 @@ export type Stmt =
   | StmtFor
   | StmtMacro
   | StmtCallMacro
-  | StmtCallFunc
   | StmtLet
   | StmtAssign
   | StmtLoadPlugin
@@ -101,7 +123,7 @@ export interface StmtData extends Node {
 
 export interface StmtFill extends Node {
   type: 'fill';
-  numBytes: number;
+  numBytes: Expr;
   fillValue: Expr;
 }
 
@@ -112,25 +134,25 @@ export interface StmtAlign extends Node {
 
 export interface StmtInclude extends Node {
   type: 'include';
-  filename: string;
+  filename: Literal;
 }
 
 export interface StmtBinary extends Node {
   type: 'binary';
-  filename: string;
+  filename: Literal;
   size: Expr;
   offset: Expr;
 }
 
 export interface StmtIfElse extends Node {
   type: 'if';
-  cases: [Expr, AsmLine[]];
+  cases: [Expr, AsmLine[]][];
   elseBranch: AsmLine[];
 }
 
 export interface StmtError extends Node {
   type: 'error';
-  error: string;
+  error: Literal;
 }
 
 export interface StmtFor extends Node {
@@ -157,12 +179,6 @@ export interface StmtCallMacro extends Node {
   args: Expr[];
 }
 
-export interface StmtCallFunc extends Node {
-  type: 'callfunc',
-  name: Ident;
-  args: Expr[];
-}
-
 export interface StmtLet extends Node {
   type: 'let',
   name: Ident;
@@ -177,7 +193,7 @@ export interface StmtAssign extends Node {
 
 export interface StmtLoadPlugin extends Node {
   type: 'load-plugin',
-  filename: string;
+  filename: Literal;
   moduleName: Ident;
 }
 
@@ -216,7 +232,7 @@ export function mkData(dataSize: DataSize, values: Expr[], loc: SourceLoc): Stmt
   }
 }
 
-export function mkFill(numBytes: number, fillValue: Expr, loc: SourceLoc): StmtFill {
+export function mkFill(numBytes: Expr, fillValue: Expr, loc: SourceLoc): StmtFill {
   return { type: 'fill', numBytes, fillValue, loc }
 }
 
@@ -224,7 +240,7 @@ export function mkAlign(alignBytes: Expr, loc: SourceLoc): StmtAlign {
   return { type: 'align', alignBytes, loc }
 }
 
-export function mkInclude(filename: string, loc: SourceLoc): StmtInclude {
+export function mkInclude(filename: Literal, loc: SourceLoc): StmtInclude {
   return {
     type: 'include',
     filename,
@@ -232,7 +248,7 @@ export function mkInclude(filename: string, loc: SourceLoc): StmtInclude {
   }
 }
 
-export function mkError(error: string, loc: SourceLoc): StmtError {
+export function mkError(error: Literal, loc: SourceLoc): StmtError {
   return {
     type: 'error',
     error,
@@ -240,7 +256,7 @@ export function mkError(error: string, loc: SourceLoc): StmtError {
   }
 }
 
-export function mkBinary(filename: Expr, size: Expr, offset: Expr, loc: SourceLoc): StmtBinary {
+export function mkBinary(filename: Literal, size: Expr, offset: Expr, loc: SourceLoc): StmtBinary {
   return {
     type: 'binary',
     filename,
@@ -250,7 +266,7 @@ export function mkBinary(filename: Expr, size: Expr, offset: Expr, loc: SourceLo
   }
 }
 
-export function mkIfElse(cases: [Expr, AsmLine[]], elseBranch: AsmLine[], loc: SourceLoc): StmtIfElse {
+export function mkIfElse(cases: [Expr, AsmLine[]][], elseBranch: AsmLine[], loc: SourceLoc): StmtIfElse {
   return {
     type: 'if',
     cases,
@@ -292,15 +308,6 @@ export function mkCallMacro(name: Ident, args: Expr[], loc: SourceLoc): StmtCall
   }
 }
 
-export function mkCallFunc(name: Ident, args: Expr[], loc: SourceLoc): StmtCallFunc {
-  return {
-    type: 'callfunc',
-    name,
-    args: args == null ? [] : args,
-    loc
-  }
-}
-
 export function mkLet(name: Ident, value: Expr, loc: SourceLoc): StmtLet {
   return {
     type: 'let',
@@ -319,7 +326,7 @@ export function mkAssign(name: Ident, value: Expr, loc: SourceLoc): StmtAssign {
   }
 }
 
-export function mkLoadPlugin(filename: string, moduleName: Ident, loc: SourceLoc): StmtLoadPlugin {
+export function mkLoadPlugin(filename: Literal, moduleName: Ident, loc: SourceLoc): StmtLoadPlugin {
   return {
     type: 'load-plugin',
     filename,

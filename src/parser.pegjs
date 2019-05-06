@@ -175,7 +175,7 @@ elseBody = PSEUDO_ELSE LWING elseBody:statements RWING {
 }
 
 string
-  = '"' chars:doubleStringCharacter* '"' __ { return chars.join(''); }
+  = '"' chars:doubleStringCharacter* '"' __ { return ast.mkLiteral(chars.join(''), loc()); }
 
 doubleStringCharacter
   = !'"' char:. { return char; }
@@ -351,7 +351,7 @@ callExpression =
 primary
   = num:num              { return ast.mkLiteral(num, loc()); }
   / ident:labelIdent     { return ast.mkIdent(ident, loc()); }
-  / string:string        { return ast.mkLiteral(string, loc()); }
+  / string:string        { return string; }
   / LPAR e:lastExpr RPAR { return e; }
 
 num =

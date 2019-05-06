@@ -306,15 +306,13 @@ interface BranchOffset {
     loc: SourceLoc;
 }
 
-const runBinop = (a: ast.Literal, b: ast.Literal, f: (a: number, b: number) => number | boolean) => {
-    // TODO combine a&b locs
+const runBinopNum = (a: any, b: any, f: (a: number, b: number) => number | boolean) => {
     // TODO a.type, b.type must be literal
-    const res = f(a.lit as number, b.lit as number);
-    const aggregateLoc = unionLocRange([a.loc, b.loc]);
+    const res = f(a as number, b as number);
     if (typeof res == 'boolean') {
-        return ast.mkLiteral(res ? 1 : 0, aggregateLoc);
+        return res ? 1 : 0;
     }
-    return ast.mkLiteral(res, aggregateLoc);
+    return res;
 }
 
 class Assembler {
@@ -443,19 +441,18 @@ class Assembler {
 
     emitBinary (ast: ast.StmtBinary): void {
         const { filename } = ast
-        const fname = this.makeSourceRelativePath(filename)
+        const fname = this.makeSourceRelativePath(this.evalExpr(filename));
         const buf: Buffer = this.guardedReadFileSync(fname, ast.loc);
 
         let offset = 0
         let size = buf.byteLength
-        if (ast.size) {
+        if (ast.size !== null) {
             if (ast.offset !== null) {
-                const offsetExpr = this.evalExpr(ast.offset);
-                offset = offsetExpr ? offsetExpr.lit : 0;
+                offset = this.evalExpr(ast.offset);
             }
             if (ast.size !== null) {
-                const sizeExpr = this.evalExpr(ast.size);
-                size = sizeExpr ? sizeExpr.lit : buf.byteLength - offset;
+                const sizeExprVal = this.evalExpr(ast.size);
+                size = sizeExprVal;
             }
         }
         // TODO buffer overflow
@@ -464,67 +461,63 @@ class Assembler {
         }
     }
 
-    evalExpr (node: ast.Expr): ast.Expr {
+    evalExpr(node: ast.Expr): any {
         switch (node.type) {
             case 'binary': {
                 const left = this.evalExpr(node.left);
                 const right = this.evalExpr(node.right);
                 switch (node.op) {
-                    case '+': return  runBinop(left, right, (a,b) => a + b)
-                    case '-': return  runBinop(left, right, (a,b) => a - b)
-                    case '*': return  runBinop(left, right, (a,b) => a * b)
-                    case '/': return  runBinop(left, right, (a,b) => a / b)
-                    case '%': return  runBinop(left, right, (a,b) => a % b)
-                    case '&': return  runBinop(left, right, (a,b) => a & b)
-                    case '|': return  runBinop(left, right, (a,b) => a | b)
-                    case '^': return  runBinop(left, right, (a,b) => a ^ b)
-                    case '<<': return runBinop(left, right, (a,b) => a << b)
-                    case '>>': return runBinop(left, right, (a,b) => a >> b)
-                    case '==': return runBinop(left, right, (a,b) => a == b)
-                    case '!=': return runBinop(left, right, (a,b) => a != b)
-                    case '<':  return runBinop(left, right, (a,b) => a <  b)
-                    case '<=': return runBinop(left, right, (a,b) => a <= b)
-                    case '>':  return runBinop(left, right, (a,b) => a >  b)
-                    case '>=': return runBinop(left, right, (a,b) => a >= b)
-                    case '&&': return runBinop(left, right, (a,b) => a && b)
-                    case '||': return runBinop(left, right, (a,b) => a || b)
+                    case '+': return  runBinopNum(left, right, (a,b) => a + b)
+                    case '-': return  runBinopNum(left, right, (a,b) => a - b)
+                    case '*': return  runBinopNum(left, right, (a,b) => a * b)
+                    case '/': return  runBinopNum(left, right, (a,b) => a / b)
+                    case '%': return  runBinopNum(left, right, (a,b) => a % b)
+                    case '&': return  runBinopNum(left, right, (a,b) => a & b)
+                    case '|': return  runBinopNum(left, right, (a,b) => a | b)
+                    case '^': return  runBinopNum(left, right, (a,b) => a ^ b)
+                    case '<<': return runBinopNum(left, right, (a,b) => a << b)
+                    case '>>': return runBinopNum(left, right, (a,b) => a >> b)
+                    case '==': return runBinopNum(left, right, (a,b) => a == b)
+                    case '!=': return runBinopNum(left, right, (a,b) => a != b)
+                    case '<':  return runBinopNum(left, right, (a,b) => a <  b)
+                    case '<=': return runBinopNum(left, right, (a,b) => a <= b)
+                    case '>':  return runBinopNum(left, right, (a,b) => a >  b)
+                    case '>=': return runBinopNum(left, right, (a,b) => a >= b)
+                    case '&&': return runBinopNum(left, right, (a,b) => a && b)
+                    case '||': return runBinopNum(left, right, (a,b) => a || b)
                     default:
                         throw new Error(`Unhandled binary operator ${node.op}`);
                 }
             }
             case 'unary': {
-                const { lit } = this.evalExpr(node.expr);
+                const v = this.evalExpr(node.expr);
                 switch (node.op) {
-                    case '+': return ast.mkLiteral(+lit, node.loc);
-                    case '-': return ast.mkLiteral(-lit, node.loc);
-                    case '~': return ast.mkLiteral(~lit, node.loc);
+                    case '+': return +v;
+                    case '-': return -v;
+                    case '~': return ~v;
                     default:
                         throw new Error(`Unhandled unary operator ${node.op}`);
                 }
             }
             case 'literal': {
-                return node;
+                return node.lit;
             }
             case 'array': {
-                // TODO node type is wrong here
-                return {
-                    ...node,
-                    values: node.values.map((v: ast.Expr) => this.evalExpr(v))
-                }
+                return node.list.map((v: ast.Expr) => this.evalExpr(v));
             }
             case 'ident': {
                 let label = node.name
                 const variable = this.variables.find(label);
                 if (variable) {
-                    if (variable.value) {
+                    if (variable.value !== undefined) {
                         return variable.value;
                     }
                     // Return something that we can continue compilation with in case this
                     // is a legit forward reference.
                     if (this.pass == 0) {
-                        return ast.mkLiteral(0, node.name.loc, node);
+                        return 0; // TODO what is this unresolved business?
                     }
-                    this.error(`Couldn't resolve value for identifier '${label}'`, node.name.loc);
+                    return this.error(`Couldn't resolve value for identifier '${label}'`, node.loc);
                 }
                 const lbl = this.scopes.findLabel(label);
                 if (!lbl) {
@@ -533,10 +526,11 @@ class Assembler {
                     }
                     // Return a placeholder that should be resolved in the next pass
                     this.needPass = true;
-                    return ast.mkLiteral(0, node.loc, node);
+                    return 0;
                 }
-                return ast.mkLiteral(lbl.addr, lbl.loc);
+                return lbl.addr;
             }
+/*
             case 'member': {
                 // TODO any
                 const findObjectField = (props: any, prop: any) => {
@@ -619,10 +613,11 @@ class Assembler {
                     this.error('Cannot index a non-array object', object.loc)
                 }
             }
+*/
             case 'callfunc': {
                 const callee = this.evalExpr(node.name);
-                if (callee.type !== 'function') {
-                    this.error(`Callee must be a function type.  Got '${callee.type}'`, node.loc);
+                if (typeof callee !== 'function') {
+                    this.error(`Callee must be a function type.  Got '${typeof callee}'`, node.loc);
                 }
                 const argValues = [];
                 for (let argIdx = 0; argIdx < node.args.length; argIdx++) {
@@ -630,17 +625,17 @@ class Assembler {
                     argValues.push(e);
                 }
                 try {
-                    return callee.func(argValues);
+                    return callee(argValues);
                 } catch(err) {
                     // TODO we lose the name for computed function names, like
                     // !use 'foo' as x
                     // x[3]()
                     // This is not really supported now though.
-                    this.error(`Plugin invocation '${node.name.name}' failed with an exception: ${err}`, node.loc);
+                    this.error(`Call to '${node.name.name}' failed with an error: ${err.message}`, node.loc);
                 }
             }
             default:
-                this.error(`Don't know what to do with node '${node.type}'`, node.loc);
+                break;
         }
     }
 
@@ -668,27 +663,25 @@ class Assembler {
             return false;
         }
         const eres = this.evalExpr(param);
-        const { lit, loc } = eres
-        this.emit(opcode)
-        this.emit(lit)
-        return true
+        this.emit(opcode);
+        this.emit(eres);
+        return true;
     }
 
     checkAbs (param: any, opcode: number | null, bits: number): boolean {
         if (opcode === null || param === null) {
             return false;
         }
-        const eres = this.evalExpr(param);
-        const { lit, loc } = eres
+        const v = this.evalExpr(param);
         if (bits === 8) {
-            if (lit < 0 || lit >= (1<<bits)) {
-                return false
+            if (v < 0 || v >= (1<<bits)) {
+                return false;
             }
-            this.emit(opcode)
-            this.emit(lit)
+            this.emit(opcode);
+            this.emit(v);
         } else {
-            this.emit(opcode)
-            this.emit16(lit)
+            this.emit(opcode);
+            this.emit16(v);
         }
         return true
     }
@@ -697,8 +690,7 @@ class Assembler {
         if (opcode === null || param === null) {
             return false;
         }
-        const eres = this.evalExpr(param);
-        const { lit: addr, loc } = eres;
+        const addr = this.evalExpr(param);
         const addrDelta = addr - this.codePC - 2;
         this.emit(opcode);
         if (addrDelta > 0x7f || addrDelta < -128) {
@@ -711,12 +703,12 @@ class Assembler {
       }
 
     setPC (valueExpr: ast.Expr): void {
-        const { lit } = this.evalExpr(valueExpr);
-        if (this.codePC > lit) {
+        const v = this.evalExpr(valueExpr);
+        if (this.codePC > v) {
             // TODO this is not great.  Actually need to track which ranges of memory have something in them.
-            this.error(`Cannot set program counter to a smaller value than current (current: $${toHex16(this.codePC)}, trying to set $${toHex16(lit)})`, valueExpr.loc)
+            this.error(`Cannot set program counter to a smaller value than current (current: $${toHex16(this.codePC)}, trying to set $${toHex16(v)})`, valueExpr.loc)
         }
-        while (this.codePC < lit) {
+        while (this.codePC < v) {
             this.emit(0);
         }
     }
@@ -730,7 +722,7 @@ class Assembler {
     }
 
     fileInclude (inclStmt: ast.StmtInclude): void {
-        const fname = this.makeSourceRelativePath(inclStmt.filename);
+        const fname = this.makeSourceRelativePath(this.evalExpr(inclStmt.filename));
         this.pushSource(fname);
         this.assemble(fname, inclStmt.loc);
         this.popSource();
@@ -739,25 +731,27 @@ class Assembler {
     fillBytes (n: ast.StmtFill): void {
         const numVals = this.evalExpr(n.numBytes);
         const fillValue = this.evalExpr(n.fillValue);
-        const fv = fillValue.lit;
+        const fv = fillValue;
         if (fv < 0 || fv >= 256) {
             this.error(`!fill value to repeat must be in 8-bit range, '${fv}' given`, fillValue.loc);
         }
-        for (let i = 0; i < numVals.lit; i++) {
+        for (let i = 0; i < numVals; i++) {
             this.emit(fv);
         }
     }
 
     alignBytes (n: ast.StmtAlign): void {
-        const alignBytes = this.evalExpr(n.alignBytes);
-        const { lit } = alignBytes;
-        if (lit < 1) {
-            this.error(`Alignment must be a positive integer, ${lit} given`, n.loc);
+        const nb = this.evalExpr(n.alignBytes);
+        if (typeof nb !== 'number') {
+            this.error(`Alignment must be a number, ${typeof nb} given`, n.alignBytes.loc);
         }
-        if ((lit & (lit-1)) != 0) {
-            this.error(`Alignment must be a power of two, ${lit} given`, n.loc);
+        if (nb < 1) {
+            this.error(`Alignment must be a positive integer, ${nb} given`, n.alignBytes.loc);
         }
-        while ((this.codePC & (lit-1)) != 0) {
+        if ((nb & (nb-1)) != 0) {
+            this.error(`Alignment must be a power of two, ${nb} given`, n.loc);
+        }
+        while ((this.codePC & (nb-1)) != 0) {
             this.emit(0);
         }
     }
@@ -789,29 +783,26 @@ class Assembler {
     emitData (exprList: ast.Expr[], bits: number) {
         for (let i = 0; i < exprList.length; i++) {
             const e = this.evalExpr(exprList[i]);
-            if (e.type === 'literal') {
-                this.emit8or16(e.lit, bits);
-            } else if (e.type === 'array') {
+            if (typeof e == 'number') {
+                this.emit8or16(e, bits);
+            } else if (e instanceof Array) {
                 // TODO function 'assertType' that returns the value and errors otherwise
-                for (let bi in e.values) {
-                    this.emit8or16(e.values[bi].lit, bits);
+                for (let bi in e) {
+                    this.emit8or16(e[bi], bits);
                 }
             } else {
-                this.error(`Only literal (int constants) or array types can be emitted.  Got ${e.type}`, exprList[i].loc);
+                this.error(`Only literal (int constants) or array types can be emitted.  Got ${typeof e}`, exprList[i].loc);
             }
         }
     }
 
     makeFunction (pluginFunc: Function, loc: SourceLoc) {
-        return {
-            type: 'function',
-            func: (args: ast.Literal[]) => {
-                const res = pluginFunc({
-                    readFileSync,
-                    resolveRelative: (fn: string) => this.makeSourceRelativePath(fn)
-                }, ...args);
-                return ast.objectToAst(res, loc);
-            }
+        return (args: any[]) => {
+            const res = pluginFunc({
+                readFileSync,
+                resolveRelative: (fn: string) => this.makeSourceRelativePath(fn)
+            }, ...args);
+            return res;
         }
     }
 
@@ -887,14 +878,14 @@ class Assembler {
                 break;
             }
             case 'error': {
-                this.error(node.error, node.loc);
+                this.error(this.evalExpr(node.error), node.loc);
                 break;
             }
             case 'if': {
                 const { cases, elseBranch } = node
                 for (let ci in cases) {
                     const [condExpr, body] = cases[ci];
-                    const { lit: condition } = this.evalExpr(condExpr);
+                    const condition = this.evalExpr(condExpr);
                     if (isTrueVal(condition)) {
                         return this.assembleLines(body);
                     }
@@ -905,13 +896,12 @@ class Assembler {
             case 'for': {
                 const { index, list, body, loc } = node
                 const lst = this.evalExpr(list);
-                if (lst.type !== 'array') {
-                    this.error(`for-loop range must be an array expression (e.g., a range() or an array)`, list.loc)
+                if (!(lst instanceof Array)) {
+                    this.error(`for-loop range must be an array expression (e.g., a range() or an array)`, list.loc);
                 }
-                const elts = lst.values
-                for (let i = 0; i < elts.length; i++) {
+                for (let i = 0; i < lst.length; i++) {
                     this.withMacroExpandScope('__forloop', () => {
-                        const value = elts[i];
+                        const value = lst[i];
                         const loopVar: Constant = {
                             arg: ast.mkMacroArg(index),
                             value
@@ -934,7 +924,7 @@ class Assembler {
                 break;
             }
             case 'callmacro': {
-                let argValues: ast.Literal[] = [];
+                let argValues: any[] = [];
                 const { name, args } = node;
                 const macro = this.scopes.findMacro(name.name);
 
@@ -983,13 +973,12 @@ class Assembler {
                 if (prevVariable == undefined) {
                     return this.error(`Assignment to undeclared variable '${name.name}'`, node.loc);
                 }
-                const lit: ast.Expr = this.evalExpr(node.value);
-                prevVariable.value = lit;
+                prevVariable.value = this.evalExpr(node.value);
                 break;
             }
             case 'load-plugin': {
                 const fname = node.filename;
-                const pluginModule = this.requirePlugin(fname);
+                const pluginModule = this.requirePlugin(this.evalExpr(fname));
                 this.bindPlugin(node, pluginModule);
                 break;
             }
@@ -1131,49 +1120,40 @@ class Assembler {
         }
     }
 
-    _requireLitType(e: ast.Literal, type: string): (any | never) {
-        if (typeof e.lit == type) {
-            return e.lit;
+    _requireType(e: any, type: string): (any | never) {
+        if (typeof e == type) {
+            return e;
         }
-        return this.error(`Expecting a ${type} value, got ${typeof e.lit}`, e.loc);
+        return this.error(`Expecting a ${type} value, got ${typeof e}`, e.loc);
     }
 
-    requireStringLit(e: ast.Literal): (string | never) { return this._requireLitType(e, 'string') as string; }
-    requireNumberLit(e: ast.Literal): (number | never) { return this._requireLitType(e, 'number') as number; }
+    requireString(e: any): (string | never) { return this._requireType(e, 'string') as string; }
+    requireNumber(e: ast.Literal): (number | never) { return this._requireType(e, 'number') as number; }
 
     registerPlugins () {
-        const json = {
-            type: 'function',
-            func: (args: ast.Literal[]) => {
-                const name = this.requireStringLit(args[0]);
-                const fname = this.makeSourceRelativePath(name);
-                return ast.objectToAst(JSON.parse(readFileSync(fname, 'utf-8')), args[0].loc);
+        const json = (args: any[]) => {
+            const name = this.requireString(args[0]);
+            const fname = this.makeSourceRelativePath(name);
+            return JSON.parse(readFileSync(fname, 'utf-8'));
+        }
+        const range = (args: any[]) => {
+            let start = 0;
+            let end = undefined;
+            if (args.length == 1) {
+                end = this.requireNumber(args[0]);
+            } else if (args.length == 2) {
+                start = this.requireNumber(args[0]);
+                end = this.requireNumber(args[1]);
+            } else {
+                throw new Error(`Invalid number of args to 'range'.  Expecting 1 or 2 arguments.`)
             }
-        };
-        const range = {
-            type: 'function',
-            func: (args: ast.Literal[]) => {
-                const mergedLocRange = unionLocRange(args.map((a: ast.Node) => a.loc));
-                let start = 0;
-                let end = undefined;
-                if (args.length == 1) {
-                    end = this.requireNumberLit(args[0]);
-                } else if (args.length == 2) {
-                    start = this.requireNumberLit(args[0]);
-                    end = this.requireNumberLit(args[1]);
-                } else {
-                    // TODO errors reporting via a context parameter
-                    return null;
-                }
-                if (end == start) {
-                    return ast.objectToAst([], mergedLocRange);
-                }
-                if (end < start) {
-                    this.error(`range(start, end) expression end must be greater than start, start=${start}, end=${end} given`, mergedLocRange);
-                    return null;
-                }
-                return ast.objectToAst(Array(end-start).fill(null).map((_,idx) => idx + start), mergedLocRange);
+            if (end == start) {
+                return [];
             }
+            if (end < start) {
+                throw new Error(`range 'end' must be larger or equal to 'start'`)
+            }
+            return Array(end-start).fill(null).map((_,idx) => idx + start);
         };
         const addPlugin = (name: string, handler: any) => {
             this.variables.add(name, {
