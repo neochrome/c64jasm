@@ -1123,7 +1123,6 @@ class Assembler {
 export function assemble(filename: string) {
     const asm = new Assembler();
     asm.pushSource(filename);
-    asm.pushEnv();
     asm.registerPlugins();
 
     let pass = 0;
@@ -1158,7 +1157,6 @@ export function assemble(filename: string) {
         }
     } while(asm.needPass && !asm.anyErrors());
 
-    asm.popEnv();
     asm.popSource();
 
     return {
