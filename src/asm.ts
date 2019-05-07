@@ -110,8 +110,19 @@ class Labels {
     }
 
     // Find a label with fully specified scope path
-    private findFq(nameFq: string): LabelAddr {
+    private findQualified(nameFq: string): LabelAddr {
         return this.labels[nameFq];
+    }
+
+    findPath(path: string[], absolute: boolean): LabelAddr | undefined {
+        if (absolute) {
+            const p = path.join('/');
+            return this.labels[p];
+        }
+        if (path.length == 1) {
+            return this.find(path[0]);
+        }
+        throw new Error('relative path unimplemented, doesnt fit well here');
     }
 
     find(name: string): LabelAddr | undefined {
@@ -137,7 +148,7 @@ class Labels {
         const { name, loc } = symbol;
         const labelFq = this.currentPrefixName(name);
         this.seenLabels.set(labelFq, symbol);
-        const oldLabel = this.findFq(labelFq);
+        const oldLabel = this.findQualified(labelFq);
 
         if (oldLabel === undefined) {
             this.set(name, codePC, loc);
@@ -249,6 +260,10 @@ class Scopes {
 
     addMacro(name: string, macro: ast.StmtMacro): void {
         return this.macros.add(name, macro);
+    }
+
+    findQualifiedLabel(path: string[], absolute: boolean): LabelAddr | undefined {
+        return this.labels.findPath(path, absolute);
     }
 
     findLabel(name: string): LabelAddr | undefined {
@@ -520,6 +535,21 @@ class Assembler {
                 }
                 return lbl.addr;
             }
+            case 'qualified-ident': {
+                // Namespace qualified ident, like foo::bar::baz
+
+                // TODO TODO
+                const lbl = this.scopes.findQualifiedLabel(node.path, node.absolute);
+                if (!lbl) {
+                    if (this.pass === 1) {
+                        this.error(`Undefined symbol '${node.path.join('::')}'`, node.loc)
+                    }
+                    // Return a placeholder that should be resolved in the next pass
+                    this.needPass = true;
+                    return 0;
+                }
+                return lbl.addr;
+            }
 /*
             case 'member': {
                 // TODO any
@@ -625,6 +655,7 @@ class Assembler {
                 }
             }
             default:
+                throw new Error('unhandled type ' + node.type);
                 break;
         }
     }

@@ -145,8 +145,8 @@ directive =
       const cases = conds.map((c,i) => [c, trueBodies[i]])
       return ast.mkIfElse(cases, elseBody, loc());
     }
-  / PSEUDO_FOR index:labelIdent "in" __ list:expr LWING body:statements RWING {
-      return ast.mkFor(ast.mkIdent(index), list, body, loc());
+  / PSEUDO_FOR index:identifier "in" __ list:expr LWING body:statements RWING {
+      return ast.mkFor(index, list, body, loc());
     }
   / PSEUDO_MACRO name:macroName LPAR args:macroArgNameList? RPAR LWING body:statements RWING {
       return ast.mkMacro(name, args, body, loc());
@@ -218,6 +218,14 @@ identNoWS = (alpha+ alphanum*) { return text(); }
 labelIdent =
     ident:identNoWS __         { return ident; }
   / ident:("_" identNoWS) __   { return ident.join(''); }
+
+scopeQualifiedIdentifier =
+    head:identNoWS tail:('::' ident)* __ {
+      return ast.mkScopeQualifiedIdent(buildList(head, tail, 1), false, loc());
+    }
+  / '::' head:identNoWS __ tail:('::' ident)* __ {
+      return ast.mkScopeQualifiedIdent(buildList(head, tail, 1), true, loc());
+    }
 
 identifier = ident:ident {
   return ast.mkIdent(ident, loc());
@@ -349,10 +357,10 @@ callExpression =
   }
 
 primary
-  = num:num              { return ast.mkLiteral(num, loc()); }
-  / ident:labelIdent     { return ast.mkIdent(ident, loc()); }
-  / string:string        { return string; }
-  / LPAR e:lastExpr RPAR { return e; }
+  = num:num                        { return ast.mkLiteral(num, loc()); }
+  / ident:scopeQualifiedIdentifier { return ident; }
+  / string:string                  { return string; }
+  / LPAR e:lastExpr RPAR           { return e; }
 
 num =
    "$"i hex:$hexdig+ __     { return parseInt(hex, 16); }

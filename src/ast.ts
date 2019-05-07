@@ -29,6 +29,12 @@ export interface Ident extends Node {
   name: string;
 }
 
+export interface ScopeQualifiedIdent extends Node {
+  type: 'qualified-ident';
+  path: string[];
+  absolute: boolean;
+}
+
 export interface Unary extends Node {
   type: 'unary';
   op: string;
@@ -55,6 +61,10 @@ export interface CallFunc extends Node {
 
 export function mkLiteral(lit: number | string, loc: SourceLoc): Literal {
   return { type: 'literal', lit, loc };
+}
+
+export function mkScopeQualifiedIdent(path: string[], absolute: boolean, loc: SourceLoc): ScopeQualifiedIdent {
+  return { type: 'qualified-ident', path, absolute, loc };
 }
 
 export function mkIdent(name: string, loc: SourceLoc): Ident {
@@ -84,7 +94,7 @@ export function mkCallFunc(name: Ident, args: Expr[], loc: SourceLoc): CallFunc 
 
 export enum DataSize { Byte, Word };
 
-export type Expr = Ident | Literal | Unary | BinaryOp | ExprArray | CallFunc
+export type Expr = Ident | ScopeQualifiedIdent | Literal | Unary | BinaryOp | ExprArray | CallFunc
 
 export type Stmt =
     StmtInsn
