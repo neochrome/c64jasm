@@ -56,28 +56,14 @@ class Environment {
     }
 }
 
-class SeenLabels {
-    seenLabels = new Map<string, ast.Label>();
-
-    clear() {
-        this.seenLabels.clear();
-    }
-
-    find(name: string) {
-        return this.seenLabels.get(name);
-    }
-
-    declare(name: string, sym: ast.Label) {
-        this.seenLabels.set(name, sym);
-    }
-}
-
 class Labels {
     labels: {[index: string]: LabelAddr} = {}
-    macroCount = 0
     labelPrefix: string[] = []
+    seenLabels = new Map<string, ast.Label>();
+    macroCount = 0
 
     startPass(): void {
+        this.seenLabels.clear();
         this.macroCount = 0;
     }
 
@@ -109,7 +95,7 @@ class Labels {
         return this.makeScopePrefix(this.labelPrefix.length)
     }
 
-    currentPrefixName(name: string): string {
+    private currentPrefixName(name: string): string {
         const prefix = this.currentScopePrefix();
         if (prefix == '') {
             return name;
@@ -125,7 +111,7 @@ class Labels {
         return `${prefix}/${name}`
     }
 
-    add(name: string, addr: number, loc: SourceLoc): void {
+    private set(name: string, addr: number, loc: SourceLoc): void {
         const lbl: LabelAddr = {
             addr,
             loc
@@ -135,7 +121,7 @@ class Labels {
     }
 
     // Find a label with fully specified scope path
-    findFq(nameFq: string): LabelAddr {
+    private findFq(nameFq: string): LabelAddr {
         return this.labels[nameFq];
     }
 
@@ -153,16 +139,38 @@ class Labels {
         }
         return undefined;
     }
+
+    labelSeen(name: string): ast.Label|undefined {
+        return this.seenLabels.get(this.currentPrefixName(name));
+    }
+
+    declareLabelSymbol(symbol: ast.Label, codePC: number): boolean {
+        const { name, loc } = symbol;
+        const labelFq = this.currentPrefixName(name);
+        this.seenLabels.set(labelFq, symbol);
+        const oldLabel = this.findFq(labelFq);
+
+        if (oldLabel === undefined) {
+            this.set(name, codePC, loc);
+            return false;
+        }
+        // If label address has changed change, need one more pass
+        if (oldLabel.addr !== codePC) {
+            this.set(name, codePC, loc);
+            return true;
+        }
+        return false;
+    }
 }
 
 class SymbolTab<S> {
     symbols: Map<string, S> = new Map();
 
-    add = (name: string, s: S) => {
+    add(name: string, s: S) {
         this.symbols.set(name, s);
     }
 
-    find (name: string): S|undefined {
+    find(name: string): S|undefined {
         return this.symbols.get(name);
     }
 }
@@ -170,15 +178,15 @@ class SymbolTab<S> {
 class ScopeStack<S> {
     stack: SymbolTab<S>[] = [];
 
-    push = () => {
+    push() {
         this.stack.push(new SymbolTab<S>());
     }
 
-    pop = () => {
+    pop() {
         this.stack.pop();
     }
 
-    find (name: string): S | undefined {
+    find(name: string): S | undefined {
         const last = this.stack.length-1;
         for (let idx = last; idx >= 0; idx--) {
             const elt = this.stack[idx].find(name);
@@ -189,7 +197,7 @@ class ScopeStack<S> {
         return undefined;
     }
 
-    add = (name: string, sym: S) => {
+    add(name: string, sym: S) {
         const last = this.stack.length-1;
         this.stack[last].add(name, sym);
     }
@@ -197,7 +205,6 @@ class ScopeStack<S> {
 
 class Scopes {
     labels = new Labels();
-    seenLabels = new SeenLabels();
     macros = new ScopeStack<ast.StmtMacro>();
 
     constructor () {
@@ -206,7 +213,6 @@ class Scopes {
 
     startPass(): void {
         this.labels.startPass();
-        this.seenLabels.clear();
     }
 
     pushLabelScope(name: string): void {
@@ -233,37 +239,16 @@ class Scopes {
         return this.macros.add(name, macro);
     }
 
-    addLabel(name: string, addr: number, loc: SourceLoc): void {
-        this.labels.add(name, addr, loc);
-    }
-
     findLabel(name: string): LabelAddr | undefined {
         return this.labels.find(name);
     }
 
-    findLabelFq(name: string): LabelAddr {
-        return this.labels.findFq(name);
-    }
-
     findSeenLabel(name: string): ast.Label|undefined {
-        return this.seenLabels.find(this.labels.currentPrefixName(name));
+        return this.labels.labelSeen(name);
     }
 
     declareLabelSymbol(symbol: ast.Label, codePC: number): boolean {
-        const { name, loc } = symbol
-        const labelFq = this.labels.currentPrefixName(name);
-        this.seenLabels.declare(labelFq, symbol);
-        const oldLabel = this.findLabelFq(labelFq);
-        if (oldLabel === undefined) {
-            this.addLabel(name, codePC, loc);
-            return false;
-        }
-        // If label address has changed change, need one more pass
-        if (oldLabel.addr !== codePC) {
-            this.addLabel(name, codePC, loc);
-            return true;
-        }
-        return false;
+        return this.labels.declareLabelSymbol(symbol, codePC);
     }
 
     dumpLabels(codePC: number) {
