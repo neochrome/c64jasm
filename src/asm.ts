@@ -264,33 +264,6 @@ function isTrueVal(cond: number | boolean): boolean {
     return (cond === true || cond != 0);
 }
 
-// Return a union of source locs (all locs must refer to the same source)
-function unionLocRange(locs: SourceLoc[]): SourceLoc {
-    let minOffset = Infinity;
-    let maxOffset = 0;
-
-    let minLoc = locs[0].start;
-    let maxLoc = locs[0].end;
-    const source = locs[0].source;
-
-    for (let i = 1; i < locs.length; i++) {
-        if (locs[i].start.offset < minOffset) {
-            minLoc = locs[i].start;
-            minOffset = minLoc.offset;
-        }
-        if (locs[i].end.offset > maxOffset) {
-            maxLoc = locs[i].end;
-            maxOffset = maxLoc.offset;
-        }
-
-    }
-    return {
-        start: minLoc,
-        end: maxLoc,
-        source: locs[0].source
-    };
-}
-
 function makeCompileLoc(filename: string) {
     // SourceLoc can be undefined here if parse is executed out of AST
     // (e.g., source file coming from CLI), so make up an error loc for it.
@@ -1022,8 +995,7 @@ class Assembler {
         const scopedStmts = line.scopedStmts;
         if (scopedStmts != null) {
             if (!line.label) {
-                // TODO this shouldn't be allowed..
-                throw new Error('ICE: line.label undefined DEBUG DEBUG');
+                throw new Error('ICE: line.label cannot be undefined');
             }
             this.withLabelScope(line.label.name, () => {
                 this.assembleLines(scopedStmts);
