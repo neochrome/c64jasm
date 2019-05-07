@@ -194,8 +194,9 @@ class ScopeStack<S> {
 
 class Scopes {
     labels = new Labels();
-    macros = new ScopeStack<ast.StmtMacro>();
-    macroCount = 0;
+    private macros = new ScopeStack<ast.StmtMacro>();
+    private macroCount = 0;
+    private environment = new Environment(null);
 
     constructor () {
         this.macros.push();
@@ -206,21 +207,40 @@ class Scopes {
         this.labels.startPass();
     }
 
+    env(): Environment {
+        return this.environment;
+    }
+
+    pushEnv(): Environment {
+        this.macros.push();
+        this.environment = new Environment(this.environment);
+        return this.environment;
+    }
+
+    popEnv() {
+        this.environment = this.environment.parent!;
+        this.macros.pop();
+    }
+
     pushLabelScope(name: string): void {
+        this.pushEnv();
         this.labels.pushLabelScope(name);
     }
 
     popLabelScope(): void {
         this.labels.popLabelScope();
+        this.popEnv();
     }
 
     pushMacroExpandScope(macroName: string): void {
+        this.pushEnv();
         this.pushLabelScope(`${macroName}/${this.macroCount}`);
         this.macroCount++;
     }
 
     popMacroExpandScope(): void {
         this.popLabelScope();
+        this.popEnv();
     }
 
     findMacro(name: string): ast.StmtMacro | undefined {
@@ -308,7 +328,6 @@ class Assembler {
     pass = 0;
     needPass = false;
     scopes = new Scopes();
-    environment = new Environment(null);
     errorList: Error[] = [];
     outOfRangeBranches: BranchOffset[] = [];
 
@@ -393,13 +412,11 @@ class Assembler {
     }
 
     pushEnv (): void {
-        this.scopes.macros.push();
-        this.environment = new Environment(this.environment);
+        this.scopes.pushEnv();
     }
 
     popEnv (): void {
-        this.environment = this.environment.parent!;
-        this.scopes.macros.pop();
+        this.scopes.popEnv();
     }
 
     emitBasicHeader () {
@@ -488,7 +505,7 @@ class Assembler {
             }
             case 'ident': {
                 let label = node.name
-                const value = this.environment.find(label);
+                const value = this.scopes.env().find(label);
                 if (value !== undefined) {
                     return value;
                 }
@@ -730,19 +747,15 @@ class Assembler {
     }
 
     withLabelScope (name: string, compileScope: () => void): void {
-        this.pushEnv();
         this.scopes.pushLabelScope(name);
         compileScope();
         this.scopes.popLabelScope();
-        this.popEnv();
     }
 
     withMacroExpandScope (name: string, compileScope: () => void): void {
-        this.pushEnv();
         this.scopes.pushMacroExpandScope(name);
         compileScope();
         this.scopes.popMacroExpandScope();
-        this.popEnv();
     }
 
     emit8or16(v: number, bits: number) {
@@ -780,7 +793,7 @@ class Assembler {
     }
 
     bindFunction (name: ast.Ident, pluginModule: any, loc: SourceLoc) {
-        this.environment.add(name.name, this.makeFunction(pluginModule, loc));
+        this.scopes.env().add(name.name, this.makeFunction(pluginModule, loc));
     }
 
     bindPlugin (node: ast.StmtLoadPlugin, pluginModule: any) {
@@ -806,7 +819,7 @@ class Assembler {
                     this.error(`All plugin exported symbols must be functions.  Got ${typeof p} for ${key}`, node.loc)
                 }
             }
-            this.environment.add(moduleName.name, {
+            this.scopes.env().add(moduleName.name, {
                 type: 'object',
                 props: dstProps,
                 loc: node.loc
@@ -865,7 +878,7 @@ class Assembler {
                 for (let i = 0; i < lst.length; i++) {
                     this.withMacroExpandScope('__forloop', () => {
                         const value = lst[i];
-                        this.environment.add(index.name, value);
+                        this.scopes.env().add(index.name, value);
                         return this.assembleLines(body);
                     });
                 }
@@ -904,7 +917,7 @@ class Assembler {
                 this.withMacroExpandScope(name.name, () => {
                     for (let i = 0; i < argValues.length; i++) {
                         const argName = macro.args[i].ident.name;
-                        this.environment.add(argName, argValues[i]);
+                        this.scopes.env().add(argName, argValues[i]);
                     }
                     this.assembleLines(macro.body);
                 });
@@ -912,22 +925,22 @@ class Assembler {
             }
             case 'let': {
                 const name = node.name;
-                const prevValue = this.environment.find(name.name);
+                const prevValue = this.scopes.env().find(name.name);
                 if (prevValue !== undefined) {
                     return this.error(`Variable '${name.name}' already defined`, node.loc);
                 }
                 const eres = this.evalExpr(node.value);
-                this.environment.add(name.name, eres);
+                this.scopes.env().add(name.name, eres);
                 break;
             }
             case 'assign': {
                 const name = node.name;
-                const prevValue = this.environment.find(name.name);
+                const prevValue = this.scopes.env().find(name.name);
                 if (prevValue == undefined) {
                     return this.error(`Assignment to undeclared variable '${name.name}'`, node.loc);
                 }
                 const evalValue = this.evalExpr(node.value);
-                this.environment.update(name.name, evalValue);
+                this.scopes.env().update(name.name, evalValue);
                 break;
             }
             case 'load-plugin': {
@@ -1109,7 +1122,7 @@ class Assembler {
             return Array(end-start).fill(null).map((_,idx) => idx + start);
         };
         const addPlugin = (name: string, handler: any) => {
-            this.environment.add(name, handler);
+            this.scopes.env().add(name, handler);
         }
         addPlugin('loadJson', json);
         addPlugin('range', range);
