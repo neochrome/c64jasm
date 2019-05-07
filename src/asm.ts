@@ -60,24 +60,13 @@ class Labels {
     labels: {[index: string]: LabelAddr} = {}
     labelPrefix: string[] = []
     seenLabels = new Map<string, ast.Label>();
-    macroCount = 0
 
     startPass(): void {
         this.seenLabels.clear();
-        this.macroCount = 0;
     }
 
     pushLabelScope(name: string): void {
         this.labelPrefix.push(name)
-    }
-
-    popMacroExpandScope(): void {
-        this.labelPrefix.pop();
-    }
-
-    pushMacroExpandScope(name: string): void {
-        this.labelPrefix.push(`${name}/${this.macroCount}`)
-        this.macroCount++;
     }
 
     popLabelScope(): void {
@@ -206,12 +195,14 @@ class ScopeStack<S> {
 class Scopes {
     labels = new Labels();
     macros = new ScopeStack<ast.StmtMacro>();
+    macroCount = 0;
 
     constructor () {
         this.macros.push();
     }
 
     startPass(): void {
+        this.macroCount = 0;
         this.labels.startPass();
     }
 
@@ -224,11 +215,12 @@ class Scopes {
     }
 
     pushMacroExpandScope(macroName: string): void {
-        this.labels.pushMacroExpandScope(macroName);
+        this.pushLabelScope(`${macroName}/${this.macroCount}`);
+        this.macroCount++;
     }
 
     popMacroExpandScope(): void {
-        this.labels.popMacroExpandScope();
+        this.popLabelScope();
     }
 
     findMacro(name: string): ast.StmtMacro | undefined {
