@@ -119,11 +119,6 @@ class Labels {
     }
 }
 
-interface Constant {
-    arg: ast.MacroArg,
-    value: any
-}
-
 class SymbolTab<S> {
     symbols: Map<string, S> = new Map();
 
@@ -133,6 +128,42 @@ class SymbolTab<S> {
 
     find (name: string): S|undefined {
         return this.symbols.get(name);
+    }
+}
+
+// Nested execution environment
+//
+// Keeps track of variable values.
+class Environment {
+    private values: Map<string, any> = new Map();
+    readonly parent: Environment | null = null;
+
+    constructor (parent: Environment | null) {
+        this.parent = parent;
+        this.values = new Map();
+    }
+
+    find(name: string): any {
+        for (let cur: Environment|null = this; cur !== null; cur = cur.parent) {
+            const v = cur.values.get(name);
+            if (v !== undefined) {
+                return v;
+            }
+        }
+    }
+
+    add(name: string, val: any): void {
+        this.values.set(name, val);
+    }
+
+    update(name: string, val: any) {
+        for (let cur: Environment|null = this; cur !== null; cur = cur.parent) {
+            const v = cur.values.get(name);
+            if (v !== undefined) {
+                cur.values.set(name, val);
+                return;
+            }
+        }
     }
 }
 
@@ -300,7 +331,7 @@ class Assembler {
     pass = 0;
     needPass = false;
     scopes = new Scopes();
-    variables = new ScopeStack<Constant>();
+    environment = new Environment(null);
     errorList: Error[] = [];
     outOfRangeBranches: BranchOffset[] = [];
 
@@ -384,13 +415,13 @@ class Assembler {
       this.debugInfo = new DebugInfoTracker();
     }
 
-    pushVariableScope (): void {
+    pushEnv (): void {
         this.scopes.macros.push();
-        this.variables.push();
+        this.environment = new Environment(this.environment);
     }
 
-    popVariableScope (): void {
-        this.variables.pop();
+    popEnv (): void {
+        this.environment = this.environment.parent!;
         this.scopes.macros.pop();
     }
 
@@ -480,17 +511,9 @@ class Assembler {
             }
             case 'ident': {
                 let label = node.name
-                const variable = this.variables.find(label);
-                if (variable) {
-                    if (variable.value !== undefined) {
-                        return variable.value;
-                    }
-                    // Return something that we can continue compilation with in case this
-                    // is a legit forward reference.
-                    if (this.pass == 0) {
-                        return 0; // TODO what is this unresolved business?
-                    }
-                    return this.error(`Couldn't resolve value for identifier '${label}'`, node.loc);
+                const value = this.environment.find(label);
+                if (value !== undefined) {
+                    return value;
                 }
                 const lbl = this.scopes.findLabel(label);
                 if (!lbl) {
@@ -730,19 +753,19 @@ class Assembler {
     }
 
     withLabelScope (name: string, compileScope: () => void): void {
-        this.pushVariableScope();
+        this.pushEnv();
         this.scopes.pushLabelScope(name);
         compileScope();
         this.scopes.popLabelScope();
-        this.popVariableScope();
+        this.popEnv();
     }
 
     withMacroExpandScope (name: string, compileScope: () => void): void {
-        this.pushVariableScope();
+        this.pushEnv();
         this.scopes.pushMacroExpandScope(name);
         compileScope();
         this.scopes.popMacroExpandScope();
-        this.popVariableScope();
+        this.popEnv();
     }
 
     emit8or16(v: number, bits: number) {
@@ -780,13 +803,8 @@ class Assembler {
     }
 
     bindFunction (name: ast.Ident, pluginModule: any, loc: SourceLoc) {
-        this.variables.add(name.name, {
-            arg: {
-                ident: name
-            },
-            value: this.makeFunction(pluginModule, loc)
-        })
-}
+        this.environment.add(name.name, this.makeFunction(pluginModule, loc));
+    }
 
     bindPlugin (node: ast.StmtLoadPlugin, pluginModule: any) {
         const moduleName = node.moduleName;
@@ -811,15 +829,10 @@ class Assembler {
                     this.error(`All plugin exported symbols must be functions.  Got ${typeof p} for ${key}`, node.loc)
                 }
             }
-            this.variables.add(moduleName.name, {
-                arg: {
-                    ident: moduleName
-                },
-                value: {
-                    type: 'object',
-                    props: dstProps,
-                    loc: node.loc
-                }
+            this.environment.add(moduleName.name, {
+                type: 'object',
+                props: dstProps,
+                loc: node.loc
             });
         }
     }
@@ -875,11 +888,7 @@ class Assembler {
                 for (let i = 0; i < lst.length; i++) {
                     this.withMacroExpandScope('__forloop', () => {
                         const value = lst[i];
-                        const loopVar: Constant = {
-                            arg: ast.mkMacroArg(index),
-                            value
-                        };
-                        this.variables.add(index.name, loopVar);
+                        this.environment.add(index.name, value);
                         return this.assembleLines(body);
                     });
                 }
@@ -902,8 +911,7 @@ class Assembler {
                 const macro = this.scopes.findMacro(name.name);
 
                 if (macro == undefined) {
-                    this.error(`Undefined macro '${name.name}'`, name.loc);
-                    return; // TODO why doesn't this.error never return type work here?
+                    return this.error(`Undefined macro '${name.name}'`, name.loc);
                 }
 
                 if (macro.args.length !== args.length) {
@@ -911,17 +919,15 @@ class Assembler {
                         name.loc);
                 }
 
-                for (let argIdx = 0; argIdx < macro.args.length; argIdx++) {
-                    const eres = this.evalExpr(args[argIdx]);
+                for (let i = 0; i < macro.args.length; i++) {
+                    const eres = this.evalExpr(args[i]);
                     argValues.push(eres);
                 }
+
                 this.withMacroExpandScope(name.name, () => {
-                    for (let argIdx = 0; argIdx < argValues.length; argIdx++) {
-                        const argName = macro.args[argIdx].ident;
-                        this.variables.add(argName.name, {
-                            arg: { ident: argName },
-                            value: argValues[argIdx]
-                        });
+                    for (let i = 0; i < argValues.length; i++) {
+                        const argName = macro.args[i].ident.name;
+                        this.environment.add(argName, argValues[i]);
                     }
                     this.assembleLines(macro.body);
                 });
@@ -929,24 +935,22 @@ class Assembler {
             }
             case 'let': {
                 const name = node.name;
-                const prevVariable = this.variables.find(name.name);
-                if (prevVariable) {
+                const prevValue = this.environment.find(name.name);
+                if (prevValue !== undefined) {
                     return this.error(`Variable '${name.name}' already defined`, node.loc);
                 }
                 const eres = this.evalExpr(node.value);
-                this.variables.add(name.name, {
-                    arg: { ident: name },
-                    value: eres
-                });
+                this.environment.add(name.name, eres);
                 break;
             }
             case 'assign': {
                 const name = node.name;
-                const prevVariable = this.variables.find(name.name);
-                if (prevVariable == undefined) {
+                const prevValue = this.environment.find(name.name);
+                if (prevValue == undefined) {
                     return this.error(`Assignment to undeclared variable '${name.name}'`, node.loc);
                 }
-                prevVariable.value = this.evalExpr(node.value);
+                const evalValue = this.evalExpr(node.value);
+                this.environment.update(name.name, evalValue);
                 break;
             }
             case 'load-plugin': {
@@ -1128,12 +1132,7 @@ class Assembler {
             return Array(end-start).fill(null).map((_,idx) => idx + start);
         };
         const addPlugin = (name: string, handler: any) => {
-            this.variables.add(name, {
-                arg: {
-                    ident: ast.mkIdent(name, {} as SourceLoc) // TODO loc?!
-                },
-                value: handler
-            })
+            this.environment.add(name, handler);
         }
         addPlugin('loadJson', json);
         addPlugin('range', range);
@@ -1147,12 +1146,12 @@ class Assembler {
 export function assemble(filename: string) {
     const asm = new Assembler();
     asm.pushSource(filename);
-    asm.pushVariableScope();
+    asm.pushEnv();
     asm.registerPlugins();
 
     let pass = 0;
     do {
-        asm.pushVariableScope();
+        asm.pushEnv();
         asm.startPass(pass);
 
         asm.assemble(filename, makeCompileLoc(filename));
@@ -1165,7 +1164,7 @@ export function assemble(filename: string) {
             }
         }
 
-        asm.popVariableScope();
+        asm.popEnv();
         const maxPass = 10;
         if (pass > maxPass) {
             console.error(`Exceeded max pass limit ${maxPass}`);
@@ -1182,7 +1181,7 @@ export function assemble(filename: string) {
         }
     } while(asm.needPass && !asm.anyErrors());
 
-    asm.popVariableScope();
+    asm.popEnv();
     asm.popSource();
 
     return {
