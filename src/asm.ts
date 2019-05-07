@@ -20,6 +20,42 @@ interface LabelAddr {
     loc: SourceLoc
 }
 
+// Nested execution environment
+//
+// Keeps track of variable values.
+class Environment {
+    private values: Map<string, any> = new Map();
+    readonly parent: Environment | null = null;
+
+    constructor (parent: Environment | null) {
+        this.parent = parent;
+        this.values = new Map();
+    }
+
+    find(name: string): any {
+        for (let cur: Environment|null = this; cur !== null; cur = cur.parent) {
+            const v = cur.values.get(name);
+            if (v !== undefined) {
+                return v;
+            }
+        }
+    }
+
+    add(name: string, val: any): void {
+        this.values.set(name, val);
+    }
+
+    update(name: string, val: any) {
+        for (let cur: Environment|null = this; cur !== null; cur = cur.parent) {
+            const v = cur.values.get(name);
+            if (v !== undefined) {
+                cur.values.set(name, val);
+                return;
+            }
+        }
+    }
+}
+
 class SeenLabels {
     seenLabels = new Map<string, ast.Label>();
 
@@ -62,14 +98,14 @@ class Labels {
         this.labelPrefix.pop();
     }
 
-    makeScopePrefix(maxDepth: number): string {
+    private makeScopePrefix(maxDepth: number): string {
         if (this.labelPrefix.length === 0) {
             return ''
         }
         return this.labelPrefix.slice(0, maxDepth).join('/');
     }
 
-    currentScopePrefix(): string {
+    private currentScopePrefix(): string {
         return this.makeScopePrefix(this.labelPrefix.length)
     }
 
@@ -81,7 +117,7 @@ class Labels {
         return `${prefix}/${name}`
     }
 
-    prefixName(name: string, depth: number): string {
+    private prefixName(name: string, depth: number): string {
         const prefix = this.makeScopePrefix(depth);
         if (prefix == '') {
             return name;
@@ -128,42 +164,6 @@ class SymbolTab<S> {
 
     find (name: string): S|undefined {
         return this.symbols.get(name);
-    }
-}
-
-// Nested execution environment
-//
-// Keeps track of variable values.
-class Environment {
-    private values: Map<string, any> = new Map();
-    readonly parent: Environment | null = null;
-
-    constructor (parent: Environment | null) {
-        this.parent = parent;
-        this.values = new Map();
-    }
-
-    find(name: string): any {
-        for (let cur: Environment|null = this; cur !== null; cur = cur.parent) {
-            const v = cur.values.get(name);
-            if (v !== undefined) {
-                return v;
-            }
-        }
-    }
-
-    add(name: string, val: any): void {
-        this.values.set(name, val);
-    }
-
-    update(name: string, val: any) {
-        for (let cur: Environment|null = this; cur !== null; cur = cur.parent) {
-            const v = cur.values.get(name);
-            if (v !== undefined) {
-                cur.values.set(name, val);
-                return;
-            }
-        }
     }
 }
 
