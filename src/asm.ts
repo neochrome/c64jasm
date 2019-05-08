@@ -56,107 +56,130 @@ class Environment {
     }
 }
 
-class Labels {
-    labels: {[index: string]: LabelAddr} = {}
-    labelPrefix: string[] = []
-    seenLabels = new Map<string, ast.Label>();
+class NamedScope<T> {
+    syms: Map<string, {val: T, seen: number}> = new Map();
+    readonly parent: NamedScope<T> | null = null;
+    private children: Map<string, NamedScope<T>> = new Map();
 
-    startPass(): void {
-        this.seenLabels.clear();
+    constructor (parent: NamedScope<T> | null) {
+        this.parent = parent;
     }
 
-    pushLabelScope(name: string): void {
-        this.labelPrefix.push(name)
-    }
-
-    popLabelScope(): void {
-        this.labelPrefix.pop();
-    }
-
-    private makeScopePrefix(maxDepth: number): string {
-        if (this.labelPrefix.length === 0) {
-            return ''
+    enter(name: string): NamedScope<T> {
+        const s = this.children.get(name);
+        if (s !== undefined) {
+            return s;
         }
-        return this.labelPrefix.slice(0, maxDepth).join('/');
+        const newScope = new NamedScope<T>(this);
+        this.children.set(name, newScope);
+        return newScope;
     }
 
-    private currentScopePrefix(): string {
-        return this.makeScopePrefix(this.labelPrefix.length)
+    leave(): NamedScope<T> {
+        return this.parent!;
     }
 
-    private currentPrefixName(name: string): string {
-        const prefix = this.currentScopePrefix();
-        if (prefix == '') {
-            return name;
-        }
-        return `${prefix}/${name}`
-    }
-
-    private prefixName(name: string, depth: number): string {
-        const prefix = this.makeScopePrefix(depth);
-        if (prefix == '') {
-            return name;
-        }
-        return `${prefix}/${name}`
-    }
-
-    private set(name: string, addr: number, loc: SourceLoc): void {
-        const lbl: LabelAddr = {
-            addr,
-            loc
-        }
-        const prefixedName = this.currentPrefixName(name);
-        this.labels[prefixedName] = lbl
-    }
-
-    // Find a label with fully specified scope path
-    private findQualified(nameFq: string): LabelAddr {
-        return this.labels[nameFq];
-    }
-
-    findPath(path: string[], absolute: boolean): LabelAddr | undefined {
-        if (absolute) {
-            const p = path.join('/');
-            return this.labels[p];
-        }
-        if (path.length == 1) {
-            return this.find(path[0]);
-        }
-        throw new Error('relative path unimplemented, doesnt fit well here');
-    }
-
-    find(name: string): LabelAddr | undefined {
-        const scopeDepth = this.labelPrefix.length;
-        if (scopeDepth == 0) {
-            return this.labels[name];
-        }
-        for (let depth = scopeDepth; depth >= 0; depth--) {
-            const pn = this.prefixName(name, depth);
-            const lbl = this.labels[pn];
-            if (lbl) {
-                return lbl;
+    // Find symbol from current and all parent scopes
+    findSymbol(name: string): {val: T, seen: number} | undefined {
+        for (let cur: NamedScope<T>|null = this; cur !== null; cur = cur.parent) {
+            const n = cur.syms.get(name);
+            if (n !== undefined) {
+                return n;
             }
         }
         return undefined;
     }
 
-    labelSeen(name: string): ast.Label|undefined {
-        return this.seenLabels.get(this.currentPrefixName(name));
+    // Find absolute ::label::path::sym style references from the symbol table
+    findSymbolPath(path: string[]): {val: T, seen: number} | undefined {
+        let tab: NamedScope<T>|undefined = this;
+        for (let i = 0; i < path.length-1; i++) {
+            tab = tab!.children.get(path[i]);
+            if (tab == undefined) {
+                return undefined;
+            }
+        }
+        return tab.syms.get(path[path.length-1]);
+    }
+
+    addSymbol(name: string, val: T, pass: number): void {
+        this.syms.set(name, { val, seen: pass });
+    }
+
+    updateSymbol(name: string, val: T, pass: number) {
+        for (let cur: NamedScope<T>|null = this; cur !== null; cur = cur.parent) {
+            const v = cur.syms.get(name);
+            if (v !== undefined) {
+                cur.syms.set(name, { val, seen: pass });
+                return;
+            }
+        }
+    }
+
+}
+
+class Labels {
+    passCount: number = 0;
+    root: NamedScope<LabelAddr> = new NamedScope<LabelAddr>(null);
+    curSymtab = this.root;
+
+    startPass(): void {
+        this.curSymtab = this.root;
+        this.passCount += 1;
+    }
+
+    pushLabelScope(name: string): void {
+        this.curSymtab = this.curSymtab.enter(name);
+    }
+
+    popLabelScope(): void {
+        this.curSymtab = this.curSymtab.leave();
+    }
+
+    findPath(path: string[], absolute: boolean): LabelAddr | undefined {
+        if (absolute) {
+            const n = this.root.findSymbolPath(path);
+            if (n !== undefined) {
+                return n.val;
+            }
+            return undefined;
+        }
+
+        if (path.length == 1) {
+            const n = this.curSymtab.findSymbol(path[0]);
+            if (n !== undefined) {
+                return n.val;
+            }
+            return undefined;
+        }
+        throw new Error('relative path unimplemented, doesnt fit well here');
+    }
+
+    find(name: string): LabelAddr | undefined {
+        return this.findPath([name], true);
+    }
+
+    labelSeen(name: string): boolean {
+        // Note: Name shadowing is not allowed.
+        const n = this.curSymtab.findSymbol(name);
+        if (n !== undefined) {
+            return n.seen == this.passCount;
+        }
+        return false;
     }
 
     declareLabelSymbol(symbol: ast.Label, codePC: number): boolean {
         const { name, loc } = symbol;
-        const labelFq = this.currentPrefixName(name);
-        this.seenLabels.set(labelFq, symbol);
-        const oldLabel = this.findQualified(labelFq);
 
-        if (oldLabel === undefined) {
-            this.set(name, codePC, loc);
+        const prevLabel = this.curSymtab.findSymbol(name);
+        if (prevLabel == undefined) {
+            this.curSymtab.addSymbol(name, { addr: codePC, loc }, this.passCount);
             return false;
         }
+        const lbl = prevLabel.val;
         // If label address has changed change, need one more pass
-        if (oldLabel.addr !== codePC) {
-            this.set(name, codePC, loc);
+        if (lbl.addr !== codePC) {
+            this.curSymtab.updateSymbol(name, { addr: codePC, loc }, this.passCount);
             return true;
         }
         return false;
@@ -270,7 +293,7 @@ class Scopes {
         return this.labels.find(name);
     }
 
-    findSeenLabel(name: string): ast.Label|undefined {
+    labelSeen(name: string): boolean {
         return this.labels.labelSeen(name);
     }
 
@@ -1004,11 +1027,8 @@ class Assembler {
 
         if (line.label !== null) {
             let lblSymbol = line.label;
-            const seenSymbol = this.scopes.findSeenLabel(lblSymbol.name);
-            if (seenSymbol) {
-                this.error(`Label '${seenSymbol.name}' already defined`, lblSymbol.loc);
-                // this.note
-                // on line ${lineNo}`)
+            if (this.scopes.labelSeen(lblSymbol.name)) {
+                this.error(`Label '${lblSymbol.name}' already defined`, lblSymbol.loc);
             } else {
                 const labelChanged = this.scopes.declareLabelSymbol(lblSymbol, this.codePC);
                 if (labelChanged) {
