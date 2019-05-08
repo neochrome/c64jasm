@@ -1254,8 +1254,8 @@ export function assemble(filename: string) {
 
     let pass = 0;
     do {
-        asm.pushLabelScope('');
         asm.startPass(pass);
+        asm.pushLabelScope('');
 
         asm.assemble(filename, makeCompileLoc(filename));
         if (asm.anyErrors()) {
