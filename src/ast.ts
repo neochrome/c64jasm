@@ -197,7 +197,7 @@ export interface StmtLet extends Node {
 
 export interface StmtAssign extends Node {
   type: 'assign',
-  name: Ident;
+  name: ScopeQualifiedIdent;
   value: Expr;
 }
 
@@ -327,7 +327,7 @@ export function mkLet(name: Ident, value: Expr, loc: SourceLoc): StmtLet {
   }
 }
 
-export function mkAssign(name: Ident, value: Expr, loc: SourceLoc): StmtAssign {
+export function mkAssign(name: ScopeQualifiedIdent, value: Expr, loc: SourceLoc): StmtAssign {
   return {
     type: 'assign',
     name,

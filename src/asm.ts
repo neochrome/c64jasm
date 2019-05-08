@@ -118,9 +118,21 @@ class NamedScope<T> {
 
 }
 
+type SymEntry  = SymLabel | SymVar;
+
+interface SymLabel {
+    type: 'label';
+    label: LabelAddr;
+}
+
+interface SymVar {
+    type: 'var';
+    var: any;
+}
+
 class Labels {
     passCount: number = 0;
-    root: NamedScope<LabelAddr> = new NamedScope<LabelAddr>(null);
+    root: NamedScope<SymEntry> = new NamedScope<SymEntry>(null);
     curSymtab = this.root;
 
     startPass(): void {
@@ -136,7 +148,7 @@ class Labels {
         this.curSymtab = this.curSymtab.leave();
     }
 
-    findPath(path: string[], absolute: boolean): LabelAddr | undefined {
+    findPath(path: string[], absolute: boolean): SymEntry | undefined {
         if (absolute) {
             const n = this.root.findSymbolPath(path);
             if (n !== undefined) {
@@ -155,7 +167,7 @@ class Labels {
         throw new Error('relative path unimplemented, doesnt fit well here');
     }
 
-    find(name: string): LabelAddr | undefined {
+    find(name: string): SymEntry | undefined {
         return this.findPath([name], true);
     }
 
@@ -172,17 +184,42 @@ class Labels {
         const { name, loc } = symbol;
 
         const prevLabel = this.curSymtab.findSymbol(name);
+        const lblsym: SymLabel = {
+            type: 'label',
+            label: { addr: codePC, loc }
+        };
         if (prevLabel == undefined) {
-            this.curSymtab.addSymbol(name, { addr: codePC, loc }, this.passCount);
+            this.curSymtab.addSymbol(name, lblsym, this.passCount);
             return false;
+        }
+        if (prevLabel.val.type !== 'label') {
+            throw new Error('ICE: declareLabelSymbol should be called only on labels');
         }
         const lbl = prevLabel.val;
         // If label address has changed change, need one more pass
-        if (lbl.addr !== codePC) {
-            this.curSymtab.updateSymbol(name, { addr: codePC, loc }, this.passCount);
+        if (lbl.label.addr !== codePC) {
+            this.curSymtab.updateSymbol(name, lblsym, this.passCount);
             return true;
         }
         return false;
+    }
+
+    addVar(name: string, value: any): void {
+        this.curSymtab.addSymbol(name, {
+            type: 'var',
+            var: value
+        }, this.passCount)
+    }
+
+    updateVar(path: string[], absolute: boolean, val:any) {
+        if (path.length !== 1 || absolute) {
+            throw new Error('should not happen TBD');
+        }
+        const prevVar = this.curSymtab.findSymbol(path[0]);
+        if (prevVar == undefined || prevVar.val.type !== 'var') {
+            throw new Error('should not happen');
+        }
+        this.curSymtab.updateSymbol(path[0], val, this.passCount);
     }
 }
 
@@ -230,7 +267,6 @@ class Scopes {
     labels = new Labels();
     private macros = new ScopeStack<ast.StmtMacro>();
     private macroCount = 0;
-    private environment = new Environment(null);
 
     constructor () {
         this.macros.push();
@@ -241,40 +277,21 @@ class Scopes {
         this.labels.startPass();
     }
 
-    env(): Environment {
-        return this.environment;
-    }
-
-    pushEnv(): Environment {
-        this.macros.push();
-        this.environment = new Environment(this.environment);
-        return this.environment;
-    }
-
-    popEnv() {
-        this.environment = this.environment.parent!;
-        this.macros.pop();
-    }
-
     pushLabelScope(name: string): void {
-        this.pushEnv();
         this.labels.pushLabelScope(name);
     }
 
     popLabelScope(): void {
         this.labels.popLabelScope();
-        this.popEnv();
     }
 
     pushMacroExpandScope(macroName: string): void {
-        this.pushEnv();
         this.pushLabelScope(`${macroName}/${this.macroCount}`);
         this.macroCount++;
     }
 
     popMacroExpandScope(): void {
         this.popLabelScope();
-        this.popEnv();
     }
 
     findMacro(name: string): ast.StmtMacro | undefined {
@@ -285,12 +302,44 @@ class Scopes {
         return this.macros.add(name, macro);
     }
 
-    findQualifiedLabel(path: string[], absolute: boolean): LabelAddr | undefined {
+    declareVar(name: string, value: any): void {
+        this.labels.addVar(name, value);
+    }
+
+    updateVar(path: string[], absolute: boolean, val: any) {
+        this.labels.updateVar(path, absolute, val);
+    }
+
+    findSym(name: string): SymEntry | undefined {
+        return this.labels.findPath([name], false);
+    }
+
+    findQualifiedSym(path: string[], absolute: boolean): SymEntry | undefined {
         return this.labels.findPath(path, absolute);
     }
 
+    findQualifiedVar(path: string[], absolute: boolean): any | undefined {
+        const se = this.labels.findPath(path, absolute);
+        if (se !== undefined && se.type == 'var') {
+            return se.var;
+        }
+        return undefined;
+    }
+
+    findQualifiedLabel(path: string[], absolute: boolean): LabelAddr | undefined {
+        const se = this.labels.findPath(path, absolute);
+        if (se !== undefined && se.type == 'label') {
+            return se.label;
+        }
+        return undefined;
+    }
+
     findLabel(name: string): LabelAddr | undefined {
-        return this.labels.find(name);
+        const se = this.labels.find(name);
+        if (se !== undefined && se.type == 'label') {
+            return se.label;
+        }
+        return undefined;
     }
 
     labelSeen(name: string): boolean {
@@ -302,6 +351,8 @@ class Scopes {
     }
 
     dumpLabels(codePC: number) {
+        return [];
+        /*
         const labels = Object.keys(this.labels.labels).map(name => {
             return {
                 name,
@@ -323,6 +374,7 @@ class Scopes {
         }
 
         return sortedLabels;
+        */
     }
 }
 
@@ -410,6 +462,13 @@ class Assembler {
         this.includeStack.pop();
     }
 
+    pushLabelScope(name: string): void {
+        this.scopes.pushLabelScope(name);
+    }
+    popLabelScope(): void {
+        this.scopes.popLabelScope();
+    }
+
     anyErrors (): boolean {
         return this.errorList.length !== 0;
     }
@@ -447,14 +506,6 @@ class Assembler {
       this.scopes.startPass();
       this.outOfRangeBranches = [];
       this.debugInfo = new DebugInfoTracker();
-    }
-
-    pushEnv (): void {
-        this.scopes.pushEnv();
-    }
-
-    popEnv (): void {
-        this.scopes.popEnv();
     }
 
     emitBasicHeader () {
@@ -542,6 +593,7 @@ class Assembler {
                 return node.list.map((v: ast.Expr) => this.evalExpr(v));
             }
             case 'ident': {
+/*                console.trace('ident called');
                 let label = node.name
                 const value = this.scopes.env().find(label);
                 if (value !== undefined) {
@@ -557,13 +609,14 @@ class Assembler {
                     return 0;
                 }
                 return lbl.addr;
+*/
+                throw new Error('ident unimplemented')
             }
             case 'qualified-ident': {
                 // Namespace qualified ident, like foo::bar::baz
-
-                // TODO TODO
-                const lbl = this.scopes.findQualifiedLabel(node.path, node.absolute);
-                if (!lbl) {
+                const sym = this.scopes.findQualifiedSym(node.path, node.absolute);
+                if (sym == undefined) {
+                    // TODO should this be only for labels??
                     if (this.pass === 1) {
                         this.error(`Undefined symbol '${node.path.join('::')}'`, node.loc)
                     }
@@ -571,7 +624,14 @@ class Assembler {
                     this.needPass = true;
                     return 0;
                 }
-                return lbl.addr;
+                if (sym.type == 'label') {
+                    return sym.label.addr;
+                } else {
+                    if (sym.type !== 'var') {
+                        throw new Error('must see var here');
+                    }
+                    return sym.var;
+                }
             }
 /*
             case 'member': {
@@ -847,7 +907,7 @@ class Assembler {
     }
 
     bindFunction (name: ast.Ident, pluginModule: any, loc: SourceLoc) {
-        this.scopes.env().add(name.name, this.makeFunction(pluginModule, loc));
+        this.scopes.declareVar(name.name, this.makeFunction(pluginModule, loc));
     }
 
     bindPlugin (node: ast.StmtLoadPlugin, pluginModule: any) {
@@ -873,7 +933,7 @@ class Assembler {
                     this.error(`All plugin exported symbols must be functions.  Got ${typeof p} for ${key}`, node.loc)
                 }
             }
-            this.scopes.env().add(moduleName.name, {
+            this.scopes.declareVar(moduleName.name, {
                 type: 'object',
                 props: dstProps,
                 loc: node.loc
@@ -932,7 +992,7 @@ class Assembler {
                 for (let i = 0; i < lst.length; i++) {
                     this.withMacroExpandScope('__forloop', () => {
                         const value = lst[i];
-                        this.scopes.env().add(index.name, value);
+                        this.scopes.declareVar(index.name, value);
                         return this.assembleLines(body);
                     });
                 }
@@ -971,7 +1031,7 @@ class Assembler {
                 this.withMacroExpandScope(name.name, () => {
                     for (let i = 0; i < argValues.length; i++) {
                         const argName = macro.args[i].ident.name;
-                        this.scopes.env().add(argName, argValues[i]);
+                        this.scopes.declareVar(argName, argValues[i]);
                     }
                     this.assembleLines(macro.body);
                 });
@@ -979,22 +1039,25 @@ class Assembler {
             }
             case 'let': {
                 const name = node.name;
-                const prevValue = this.scopes.env().find(name.name);
-                if (prevValue !== undefined) {
+                const sym = this.scopes.findSym(name.name);
+                if (sym == undefined) {
+                    const eres = this.evalExpr(node.value);
+                    this.scopes.declareVar(name.name, eres);
+                } else {
+                    // TODO already declare?!
+                    // TODO need to use seen flags here
                     return this.error(`Variable '${name.name}' already defined`, node.loc);
                 }
-                const eres = this.evalExpr(node.value);
-                this.scopes.env().add(name.name, eres);
                 break;
             }
             case 'assign': {
                 const name = node.name;
-                const prevValue = this.scopes.env().find(name.name);
+                const prevValue = this.scopes.findQualifiedVar(node.name.path, node.name.absolute);
                 if (prevValue == undefined) {
-                    return this.error(`Assignment to undeclared variable '${name.name}'`, node.loc);
+                    return this.error(`Assignment to undeclared variable '${name.path.join('::')}'`, node.loc);
                 }
                 const evalValue = this.evalExpr(node.value);
-                this.scopes.env().update(name.name, evalValue);
+                this.scopes.updateVar(name.path, name.absolute, evalValue);
                 break;
             }
             case 'load-plugin': {
@@ -1173,7 +1236,7 @@ class Assembler {
             return Array(end-start).fill(null).map((_,idx) => idx + start);
         };
         const addPlugin = (name: string, handler: any) => {
-            this.scopes.env().add(name, handler);
+            this.scopes.declareVar(name, handler);
         }
         addPlugin('loadJson', json);
         addPlugin('range', range);
@@ -1191,7 +1254,7 @@ export function assemble(filename: string) {
 
     let pass = 0;
     do {
-        asm.pushEnv();
+        asm.pushLabelScope('');
         asm.startPass(pass);
 
         asm.assemble(filename, makeCompileLoc(filename));
@@ -1204,8 +1267,8 @@ export function assemble(filename: string) {
             }
         }
 
-        asm.popEnv();
-        const maxPass = 10;
+        asm.popLabelScope();
+        const maxPass = 2;
         if (pass > maxPass) {
             console.error(`Exceeded max pass limit ${maxPass}`);
             return;

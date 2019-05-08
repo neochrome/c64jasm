@@ -155,7 +155,9 @@ directive =
       return ast.mkCallMacro(name, args, loc());
     }
   / PSEUDO_LET name:identifier EQU value:expr  { return ast.mkLet(name, value, loc()); }
-  / name:identifier EQU value:expr             { return ast.mkAssign(name, value, loc()); }
+  / name:scopeQualifiedIdentifier EQU value:expr {
+      return ast.mkAssign(name, value, loc());
+    }
   / PSEUDO_USE filename:string "as" __ plugin:identifier  {
       return ast.mkLoadPlugin(filename, plugin, loc());
     }
