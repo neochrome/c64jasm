@@ -113,7 +113,7 @@ statement =
     directive:directive     { return directive; }
   / instruction:instruction { return ast.mkInsn(instruction, loc()); }
 
-label = lbl:labelIdent ":" __  { return ast.mkLabel(lbl, loc()); }
+label = lbl:identNoWS ":" __  { return ast.mkLabel(lbl, loc()); }
 
 setPC = STAR EQU pc:expr { return ast.mkSetPC(pc, loc()); }
 
@@ -151,7 +151,7 @@ directive =
   / PSEUDO_MACRO name:macroName LPAR args:macroArgNameList? RPAR LWING body:statements RWING {
       return ast.mkMacro(name, args, body, loc());
     }
-  / "+" name:macroName LPAR args:exprList? RPAR  {
+  / "+" name:scopeQualifiedIdentifier LPAR args:exprList? RPAR  {
       return ast.mkCallMacro(name, args, loc());
     }
   / PSEUDO_LET name:identifier EQU value:expr  { return ast.mkLet(name, value, loc()); }
@@ -219,13 +219,12 @@ identNoWS = (alpha+ alphanum*) { return text(); }
 
 labelIdent =
     ident:identNoWS __         { return ident; }
-  / ident:("_" identNoWS) __   { return ident.join(''); }
 
 scopeQualifiedIdentifier =
-    head:identNoWS tail:('::' ident)* __ {
+    head:identNoWS tail:('::' identNoWS)* __ {
       return ast.mkScopeQualifiedIdent(buildList(head, tail, 1), false, loc());
     }
-  / '::' head:identNoWS __ tail:('::' ident)* __ {
+  / '::' head:identNoWS tail:('::' identNoWS)* __ {
       return ast.mkScopeQualifiedIdent(buildList(head, tail, 1), true, loc());
     }
 

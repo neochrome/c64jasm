@@ -21,12 +21,9 @@ const blacklist: Test[] = [
     'test/cases/json4.input.asm',
     'test/cases/plugin3.input.asm',
     'test/cases/plugin4.input.asm',
-    'test/cases/scopes7.input.asm',
-    'test/cases/scopes8.input.asm',
 
     'test/errors/array1.input.asm',
     'test/errors/plugin3.input.asm',
-    'test/errors/scopes3.input.asm'
 ];
 
 interface Diagnostic {

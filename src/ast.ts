@@ -185,7 +185,7 @@ export interface StmtMacro extends Node {
 
 export interface StmtCallMacro extends Node {
   type: 'callmacro',
-  name: Ident;
+  name: ScopeQualifiedIdent;
   args: Expr[];
 }
 
@@ -309,7 +309,7 @@ export function mkMacro(name: Ident, args: MacroArg[] | null, body: AsmLine[], l
   }
 }
 
-export function mkCallMacro(name: Ident, args: Expr[], loc: SourceLoc): StmtCallMacro {
+export function mkCallMacro(name: ScopeQualifiedIdent, args: Expr[], loc: SourceLoc): StmtCallMacro {
   return {
     type: 'callmacro',
     name,

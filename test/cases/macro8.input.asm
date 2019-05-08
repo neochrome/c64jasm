@@ -14,7 +14,7 @@
 }
 
 foo: {
-lbl:
+!let addr = 13
     +speedcode()
     +speedcode()
 }

@@ -2,7 +2,7 @@
 
 outer: {
     inner: {
-        inner: {
+        inner:{
             lda #0
         }
     }
@@ -10,4 +10,5 @@ outer: {
 }
 
     lda #1
-    sta ::outer::inner::inner-1
+    !let x = ::outer::inner::inner - 1
+    sta x ; ::outer::inner::inner

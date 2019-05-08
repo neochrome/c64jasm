@@ -20,42 +20,6 @@ interface LabelAddr {
     loc: SourceLoc
 }
 
-// Nested execution environment
-//
-// Keeps track of variable values.
-class Environment {
-    private values: Map<string, any> = new Map();
-    readonly parent: Environment | null = null;
-
-    constructor (parent: Environment | null) {
-        this.parent = parent;
-        this.values = new Map();
-    }
-
-    find(name: string): any {
-        for (let cur: Environment|null = this; cur !== null; cur = cur.parent) {
-            const v = cur.values.get(name);
-            if (v !== undefined) {
-                return v;
-            }
-        }
-    }
-
-    add(name: string, val: any): void {
-        this.values.set(name, val);
-    }
-
-    update(name: string, val: any) {
-        for (let cur: Environment|null = this; cur !== null; cur = cur.parent) {
-            const v = cur.values.get(name);
-            if (v !== undefined) {
-                cur.values.set(name, val);
-                return;
-            }
-        }
-    }
-}
-
 class NamedScope<T> {
     syms: Map<string, {val: T, seen: number}> = new Map();
     readonly parent: NamedScope<T> | null = null;
@@ -90,8 +54,12 @@ class NamedScope<T> {
         return undefined;
     }
 
-    // Find absolute ::label::path::sym style references from the symbol table
+    // Find relative label::path::sym style references from the symbol table
     findSymbolPath(path: string[]): {val: T, seen: number} | undefined {
+        if (path.length == 1) {
+            return this.findSymbol(path[0]);
+        }
+
         let tab: NamedScope<T>|undefined = this;
         for (let i = 0; i < path.length-1; i++) {
             tab = tab!.children.get(path[i]);
@@ -118,26 +86,41 @@ class NamedScope<T> {
 
 }
 
-type SymEntry  = SymLabel | SymVar;
+type SymEntry  = SymLabel | SymVar | SymMacro;
 
 interface SymLabel {
     type: 'label';
-    label: LabelAddr;
+    data: LabelAddr;
 }
 
 interface SymVar {
     type: 'var';
-    var: any;
+    data: any;
 }
 
-class Labels {
+interface SymMacro {
+    type: 'macro';
+    data: ast.StmtMacro;
+}
+
+class Scopes {
     passCount: number = 0;
     root: NamedScope<SymEntry> = new NamedScope<SymEntry>(null);
     curSymtab = this.root;
+    private anonScopeCount = 0;
 
     startPass(): void {
         this.curSymtab = this.root;
+        this.anonScopeCount = 0;
         this.passCount += 1;
+    }
+
+    pushAnonScope(): void {
+        this.pushLabelScope(`__anon_scope_${this.anonScopeCount}`);
+        this.anonScopeCount++;
+    }
+    popAnonScope(): void {
+        this.popLabelScope();
     }
 
     pushLabelScope(name: string): void {
@@ -156,24 +139,29 @@ class Labels {
             }
             return undefined;
         }
-
-        if (path.length == 1) {
-            const n = this.curSymtab.findSymbol(path[0]);
-            if (n !== undefined) {
-                return n.val;
-            }
-            return undefined;
+        const n = this.curSymtab.findSymbolPath(path);
+        if (n !== undefined) {
+            return n.val;
         }
-        throw new Error('relative path unimplemented, doesnt fit well here');
+        return undefined;
     }
 
-    find(name: string): SymEntry | undefined {
-        return this.findPath([name], true);
+    findQualifiedSym(path: string[], absolute: boolean): SymEntry | undefined {
+        return this.findPath(path, absolute);
     }
 
-    labelSeen(name: string): boolean {
+    findQualifiedVar(path: string[], absolute: boolean): any | undefined {
+        const se = this.findPath(path, absolute);
+        if (se !== undefined && se.type == 'var') {
+            return se.data;
+        }
+        return undefined;
+    }
+
+
+    symbolSeen(name: string): boolean {
         // Note: Name shadowing is not allowed.
-        const n = this.curSymtab.findSymbol(name);
+        const n = this.curSymtab.syms.get(name);
         if (n !== undefined) {
             return n.seen == this.passCount;
         }
@@ -183,10 +171,14 @@ class Labels {
     declareLabelSymbol(symbol: ast.Label, codePC: number): boolean {
         const { name, loc } = symbol;
 
-        const prevLabel = this.curSymtab.findSymbol(name);
+        // As we allow name shadowing, we must look up the name
+        // only from the current scope.  If we lookup parent
+        // scopes for label declarations, we end up
+        // mutating some unrelated, but same-named label names.
+        const prevLabel = this.curSymtab.syms.get(name);
         const lblsym: SymLabel = {
             type: 'label',
-            label: { addr: codePC, loc }
+            data: { addr: codePC, loc }
         };
         if (prevLabel == undefined) {
             this.curSymtab.addSymbol(name, lblsym, this.passCount);
@@ -197,17 +189,17 @@ class Labels {
         }
         const lbl = prevLabel.val;
         // If label address has changed change, need one more pass
-        if (lbl.label.addr !== codePC) {
+        if (lbl.data.addr !== codePC) {
             this.curSymtab.updateSymbol(name, lblsym, this.passCount);
             return true;
         }
         return false;
     }
 
-    addVar(name: string, value: any): void {
+    declareVar(name: string, value: any): void {
         this.curSymtab.addSymbol(name, {
             type: 'var',
-            var: value
+            data: value
         }, this.passCount)
     }
 
@@ -219,135 +211,26 @@ class Labels {
         if (prevVar == undefined || prevVar.val.type !== 'var') {
             throw new Error('should not happen');
         }
-        this.curSymtab.updateSymbol(path[0], val, this.passCount);
-    }
-}
-
-class SymbolTab<S> {
-    symbols: Map<string, S> = new Map();
-
-    add(name: string, s: S) {
-        this.symbols.set(name, s);
+        const newVar: SymVar = {
+            type: 'var',
+            data: val
+        };
+        this.curSymtab.updateSymbol(path[0], newVar, this.passCount);
     }
 
-    find(name: string): S|undefined {
-        return this.symbols.get(name);
-    }
-}
-
-class ScopeStack<S> {
-    stack: SymbolTab<S>[] = [];
-
-    push() {
-        this.stack.push(new SymbolTab<S>());
-    }
-
-    pop() {
-        this.stack.pop();
-    }
-
-    find(name: string): S | undefined {
-        const last = this.stack.length-1;
-        for (let idx = last; idx >= 0; idx--) {
-            const elt = this.stack[idx].find(name);
-            if (elt) {
-                return elt;
-            }
+    findMacro(path: string[], absolute: boolean): ast.StmtMacro | undefined {
+        const sym = this.findPath(path, absolute);
+        if (sym !== undefined && sym.type == 'macro') {
+            return sym.data;
         }
         return undefined;
     }
 
-    add(name: string, sym: S) {
-        const last = this.stack.length-1;
-        this.stack[last].add(name, sym);
-    }
-}
-
-class Scopes {
-    labels = new Labels();
-    private macros = new ScopeStack<ast.StmtMacro>();
-    private macroCount = 0;
-
-    constructor () {
-        this.macros.push();
-    }
-
-    startPass(): void {
-        this.macroCount = 0;
-        this.labels.startPass();
-    }
-
-    pushLabelScope(name: string): void {
-        this.labels.pushLabelScope(name);
-    }
-
-    popLabelScope(): void {
-        this.labels.popLabelScope();
-    }
-
-    pushMacroExpandScope(macroName: string): void {
-        this.pushLabelScope(`${macroName}/${this.macroCount}`);
-        this.macroCount++;
-    }
-
-    popMacroExpandScope(): void {
-        this.popLabelScope();
-    }
-
-    findMacro(name: string): ast.StmtMacro | undefined {
-        return this.macros.find(name);
-    }
-
-    addMacro(name: string, macro: ast.StmtMacro): void {
-        return this.macros.add(name, macro);
-    }
-
-    declareVar(name: string, value: any): void {
-        this.labels.addVar(name, value);
-    }
-
-    updateVar(path: string[], absolute: boolean, val: any) {
-        this.labels.updateVar(path, absolute, val);
-    }
-
-    findSym(name: string): SymEntry | undefined {
-        return this.labels.findPath([name], false);
-    }
-
-    findQualifiedSym(path: string[], absolute: boolean): SymEntry | undefined {
-        return this.labels.findPath(path, absolute);
-    }
-
-    findQualifiedVar(path: string[], absolute: boolean): any | undefined {
-        const se = this.labels.findPath(path, absolute);
-        if (se !== undefined && se.type == 'var') {
-            return se.var;
-        }
-        return undefined;
-    }
-
-    findQualifiedLabel(path: string[], absolute: boolean): LabelAddr | undefined {
-        const se = this.labels.findPath(path, absolute);
-        if (se !== undefined && se.type == 'label') {
-            return se.label;
-        }
-        return undefined;
-    }
-
-    findLabel(name: string): LabelAddr | undefined {
-        const se = this.labels.find(name);
-        if (se !== undefined && se.type == 'label') {
-            return se.label;
-        }
-        return undefined;
-    }
-
-    labelSeen(name: string): boolean {
-        return this.labels.labelSeen(name);
-    }
-
-    declareLabelSymbol(symbol: ast.Label, codePC: number): boolean {
-        return this.labels.declareLabelSymbol(symbol, codePC);
+    declareMacro(name: string, value: ast.StmtMacro): void {
+        this.curSymtab.addSymbol(name, {
+            type: 'macro',
+            data: value
+        }, this.passCount)
     }
 
     dumpLabels(codePC: number) {
@@ -460,13 +343,6 @@ class Assembler {
 
     popSource (): void {
         this.includeStack.pop();
-    }
-
-    pushLabelScope(name: string): void {
-        this.scopes.pushLabelScope(name);
-    }
-    popLabelScope(): void {
-        this.scopes.popLabelScope();
     }
 
     anyErrors (): boolean {
@@ -625,12 +501,12 @@ class Assembler {
                     return 0;
                 }
                 if (sym.type == 'label') {
-                    return sym.label.addr;
+                    return sym.data.addr;
                 } else {
                     if (sym.type !== 'var') {
                         throw new Error('must see var here');
                     }
-                    return sym.var;
+                    return sym.data;
                 }
             }
 /*
@@ -734,7 +610,13 @@ class Assembler {
                     // !use 'foo' as x
                     // x[3]()
                     // This is not really supported now though.
-                    this.error(`Call to '${node.name.name}' failed with an error: ${err.message}`, node.loc);
+
+                    // TODO callee is in fact an expression so we don't
+                    // have a name for it here.  But it's mostly an identifier
+                    // so show that just to pass tests for now.
+                    const nn = ((node.name) as unknown) as ast.ScopeQualifiedIdent;
+                    const kludgename = nn.path.join('::')
+                    this.error(`Call to '${kludgename}' failed with an error: ${err.message}`, node.loc);
                 }
             }
             default:
@@ -860,16 +742,18 @@ class Assembler {
         }
     }
 
+    // Enter anonymous block scope
+    withAnonScope(compileScope: () => void): void {
+        this.scopes.pushAnonScope();
+        compileScope();
+        this.scopes.popAnonScope();
+    }
+
+    // Enter named scope
     withLabelScope (name: string, compileScope: () => void): void {
         this.scopes.pushLabelScope(name);
         compileScope();
         this.scopes.popLabelScope();
-    }
-
-    withMacroExpandScope (name: string, compileScope: () => void): void {
-        this.scopes.pushMacroExpandScope(name);
-        compileScope();
-        this.scopes.popMacroExpandScope();
     }
 
     emit8or16(v: number, bits: number) {
@@ -977,10 +861,14 @@ class Assembler {
                     const [condExpr, body] = cases[ci];
                     const condition = this.evalExpr(condExpr);
                     if (isTrueVal(condition)) {
-                        return this.assembleLines(body);
+                        return this.withAnonScope(() => {
+                            this.assembleLines(body);
+                        });
                     }
                 }
-                this.assembleLines(elseBranch);
+                return this.withAnonScope(() => {
+                    this.assembleLines(elseBranch);
+                })
                 break;
             }
             case 'for': {
@@ -990,7 +878,7 @@ class Assembler {
                     this.error(`for-loop range must be an array expression (e.g., a range() or an array)`, list.loc);
                 }
                 for (let i = 0; i < lst.length; i++) {
-                    this.withMacroExpandScope('__forloop', () => {
+                    this.withAnonScope(() => {
                         const value = lst[i];
                         this.scopes.declareVar(index.name, value);
                         return this.assembleLines(body);
@@ -1001,25 +889,25 @@ class Assembler {
             case 'macro': {
                 const { name, args, body } = node;
                 // TODO check for duplicate arg names!
-                const prevMacro = this.scopes.findMacro(name.name);
-                if (prevMacro !== undefined) {
+                const prevMacro = this.scopes.findMacro([name.name], false);
+                if (prevMacro !== undefined && this.scopes.symbolSeen(name.name)) {
                     // TODO previous declaration from prevMacro
-                    this.error(`Macro '${name.name}' already defined`, name.loc);
+                    return this.error(`Macro '${name.name}' already defined`, name.loc);
                 }
-                this.scopes.addMacro(name.name, node);
+                this.scopes.declareMacro(name.name, node);
                 break;
             }
             case 'callmacro': {
                 let argValues: any[] = [];
                 const { name, args } = node;
-                const macro = this.scopes.findMacro(name.name);
+                const macro = this.scopes.findMacro(name.path, name.absolute);
 
                 if (macro == undefined) {
-                    return this.error(`Undefined macro '${name.name}'`, name.loc);
+                    return this.error(`Undefined macro '${name.path.join('::')}'`, name.loc);
                 }
 
                 if (macro.args.length !== args.length) {
-                    this.error(`Macro '${name.name}' declared with ${macro.args.length} args but called here with ${args.length}`,
+                    this.error(`Macro '${name.path.join('::')}' declared with ${macro.args.length} args but called here with ${args.length}`,
                         name.loc);
                 }
 
@@ -1028,7 +916,7 @@ class Assembler {
                     argValues.push(eres);
                 }
 
-                this.withMacroExpandScope(name.name, () => {
+                this.withAnonScope(() => {
                     for (let i = 0; i < argValues.length; i++) {
                         const argName = macro.args[i].ident.name;
                         this.scopes.declareVar(argName, argValues[i]);
@@ -1039,14 +927,14 @@ class Assembler {
             }
             case 'let': {
                 const name = node.name;
-                const sym = this.scopes.findSym(name.name);
+                const sym = this.scopes.findQualifiedSym([name.name], false);
                 if (sym == undefined) {
                     const eres = this.evalExpr(node.value);
                     this.scopes.declareVar(name.name, eres);
                 } else {
-                    // TODO already declare?!
-                    // TODO need to use seen flags here
-                    return this.error(`Variable '${name.name}' already defined`, node.loc);
+                    if (this.scopes.symbolSeen(name.name)) {
+                        return this.error(`Variable '${name.name}' already defined`, node.loc);
+                    }
                 }
                 break;
             }
@@ -1090,7 +978,7 @@ class Assembler {
 
         if (line.label !== null) {
             let lblSymbol = line.label;
-            if (this.scopes.labelSeen(lblSymbol.name)) {
+            if (this.scopes.symbolSeen(lblSymbol.name)) {
                 this.error(`Label '${lblSymbol.name}' already defined`, lblSymbol.loc);
             } else {
                 const labelChanged = this.scopes.declareLabelSymbol(lblSymbol, this.codePC);
@@ -1255,8 +1143,6 @@ export function assemble(filename: string) {
     let pass = 0;
     do {
         asm.startPass(pass);
-        asm.pushLabelScope('');
-
         asm.assemble(filename, makeCompileLoc(filename));
         if (asm.anyErrors()) {
             return {
@@ -1266,9 +1152,7 @@ export function assemble(filename: string) {
                 errors: asm.errors()
             }
         }
-
-        asm.popLabelScope();
-        const maxPass = 2;
+        const maxPass = 10;
         if (pass > maxPass) {
             console.error(`Exceeded max pass limit ${maxPass}`);
             return;
