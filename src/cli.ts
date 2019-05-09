@@ -74,7 +74,7 @@ function compile(args: any) {
     }
 
     if (args.dumpLabels) {
-        labels.forEach(({name, addr, size, loc}) => {
+        labels.forEach(({name, addr, size}) => {
             const msg = sprintf("%s %4d %s", toHex16(addr), size, name);
             console.log(msg);
         })

@@ -887,14 +887,12 @@ class Assembler {
             case 'let': {
                 const name = node.name;
                 const sym = this.scopes.findQualifiedSym([name.name], false);
-                if (sym == undefined) {
-                    const eres = this.evalExpr(node.value);
-                    this.scopes.declareVar(name.name, eres);
-                } else {
-                    if (this.scopes.symbolSeen(name.name)) {
-                        return this.error(`Variable '${name.name}' already defined`, node.loc);
-                    }
+                const eres = this.evalExpr(node.value);
+
+                if (sym !== undefined && this.scopes.symbolSeen(name.name)) {
+                    return this.error(`Variable '${name.name}' already defined`, node.loc);
                 }
+                this.scopes.declareVar(name.name, eres);
                 break;
             }
             case 'assign': {
