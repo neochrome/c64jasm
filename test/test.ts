@@ -17,13 +17,7 @@ let verbose = false;
 type Test = string;
 
 const blacklist: Test[] = [
-    'test/cases/json3.input.asm',
-    'test/cases/json4.input.asm',
-    'test/cases/plugin3.input.asm',
-    'test/cases/plugin4.input.asm',
-
-    'test/errors/array1.input.asm',
-    'test/errors/plugin3.input.asm',
+    'test/cases/scopes12.input.asm'
 ];
 
 interface Diagnostic {

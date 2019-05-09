@@ -339,16 +339,11 @@ memberExpression =
         return { property, computed: true };
       }
     / DOT property:labelIdent {
-        return { property, computed: false };
+        return { property: ast.mkIdent(property, loc()), computed: false };
       }
   )* {
       return tail.reduce(function(result, element) {
-        return {
-          type: "member",
-          object: result,
-          property: element.property,
-          computed: element.computed
-        };
+        return ast.mkMember(result, element.property, element.computed, loc());
       }, head);
   }
 

@@ -54,9 +54,16 @@ export interface ExprArray extends Node {
 }
 
 export interface CallFunc extends Node {
-  type: 'callfunc',
+  type: 'callfunc';
   name: Ident;
   args: Expr[];
+}
+
+export interface Member extends Node {
+  type: 'member';
+  object: Expr;
+  property: Expr;
+  computed: boolean;
 }
 
 export function mkLiteral(lit: number | string, loc: SourceLoc): Literal {
@@ -92,9 +99,13 @@ export function mkCallFunc(name: Ident, args: Expr[], loc: SourceLoc): CallFunc 
   }
 }
 
+export function mkMember(object: Expr, property: Ident, computed: boolean, loc: SourceLoc): Member {
+  return { type: 'member', object, property, computed, loc };
+}
+
 export enum DataSize { Byte, Word };
 
-export type Expr = Ident | ScopeQualifiedIdent | Literal | Unary | BinaryOp | ExprArray | CallFunc
+export type Expr = Ident | ScopeQualifiedIdent | Literal | Unary | BinaryOp | ExprArray | CallFunc | Member
 
 export type Stmt =
     StmtInsn

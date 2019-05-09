@@ -23,10 +23,12 @@ interface LabelAddr {
 class NamedScope<T> {
     syms: Map<string, {val: T, seen: number}> = new Map();
     readonly parent: NamedScope<T> | null = null;
+    readonly name: string;
     private children: Map<string, NamedScope<T>> = new Map();
 
-    constructor (parent: NamedScope<T> | null) {
+    constructor (parent: NamedScope<T> | null, name: string) {
         this.parent = parent;
+        this.name = name;
     }
 
     enter(name: string): NamedScope<T> {
@@ -34,7 +36,7 @@ class NamedScope<T> {
         if (s !== undefined) {
             return s;
         }
-        const newScope = new NamedScope<T>(this);
+        const newScope = new NamedScope<T>(this, name);
         this.children.set(name, newScope);
         return newScope;
     }
@@ -60,7 +62,16 @@ class NamedScope<T> {
             return this.findSymbol(path[0]);
         }
 
-        let tab: NamedScope<T>|undefined = this;
+        // Go up the scope tree until we're now longer at an anonymous
+        // scope.
+        let tab: NamedScope<T> | null | undefined = this;
+        while (tab!.name.startsWith('__anon_scope_')) {
+            tab = tab.parent;
+            if (tab == null) {
+                return undefined;
+            }
+        }
+
         for (let i = 0; i < path.length-1; i++) {
             tab = tab!.children.get(path[i]);
             if (tab == undefined) {
@@ -105,7 +116,7 @@ interface SymMacro {
 
 class Scopes {
     passCount: number = 0;
-    root: NamedScope<SymEntry> = new NamedScope<SymEntry>(null);
+    root: NamedScope<SymEntry> = new NamedScope<SymEntry>(null, '');
     curSymtab = this.root;
     private anonScopeCount = 0;
 
@@ -160,7 +171,6 @@ class Scopes {
 
 
     symbolSeen(name: string): boolean {
-        // Note: Name shadowing is not allowed.
         const n = this.curSymtab.syms.get(name);
         if (n !== undefined) {
             return n.seen == this.passCount;
@@ -466,27 +476,10 @@ class Assembler {
                 return node.lit;
             }
             case 'array': {
-                return node.list.map((v: ast.Expr) => this.evalExpr(v));
+                return node.list.map(v => this.evalExpr(v));
             }
             case 'ident': {
-/*                console.trace('ident called');
-                let label = node.name
-                const value = this.scopes.env().find(label);
-                if (value !== undefined) {
-                    return value;
-                }
-                const lbl = this.scopes.findLabel(label);
-                if (!lbl) {
-                    if (this.pass === 1) {
-                        this.error(`Undefined symbol '${label}'`, node.loc)
-                    }
-                    // Return a placeholder that should be resolved in the next pass
-                    this.needPass = true;
-                    return 0;
-                }
-                return lbl.addr;
-*/
-                throw new Error('ident unimplemented')
+                throw new Error('should not see an ident here -- if you do, it is probably a wrong type node in parser')
             }
             case 'qualified-ident': {
                 // Namespace qualified ident, like foo::bar::baz
@@ -509,90 +502,60 @@ class Assembler {
                     return sym.data;
                 }
             }
-/*
             case 'member': {
-                // TODO any
-                const findObjectField = (props: any, prop: any) => {
-                    for (let pi = 0; pi < props.length; pi++) {
-                        const p = props[pi]
-                        // TODO THIS IS SUPER MESSY!! and doesn't handle errors
-                        if (typeof prop == 'object') {
-                            if (p.key === prop.lit) {
-                                return p.val
-                            }
-                        } else {
-                            if (p.key === prop) {
-                                return p.val;
-                            }
-                        }
-                    }
-                }
-                let triedNestedLabels = undefined;
-                // Does the object access match a foo.bar.baz style label access?
-                // If yes, resolve as label
-                if (node.type == 'member' && !node.computed) {
-                    const names = [];
-                    let n = node;
-                    let allMatched = true;
-                    do {
-                        if (n.type !== 'member') {
-                            allMatched = false;
-                            break;
-                        }
-                        if (n.computed) {
-                            allMatched = false;
-                            break;
-                        }
-                        names.push(n.property)
-                        n = n.object;
-                    } while(n.type != 'ident');
-                    if (allMatched && n.type == 'ident') {
-                        names.push(n.name);
-                        names.reverse();
-                        const nestedLabel = names.join('/');
-                        const lbl = this.scopes.findLabel(nestedLabel);
-                        // If this is a legit label, treat it as such.  Otherwise fall-thru
-                        // to object property lookup.
-                        if (lbl) {
-                            return this.evalExpr(ast.mkIdent(nestedLabel, node.loc));
-                        }
-                        triedNestedLabels = names.join('.');
-                    }
-                }
                 const object = this.evalExpr(node.object);
-                if (object.unresolved) {
-                    const { name } = object.unresolved
-                    this.error(`Cannot access properties of an unresolved symbol '${name}'`, object.unresolved.loc);
+
+                if (object == undefined) {
+                    return this.error(`Cannot access properties of an unresolved symbol'`, node.loc);
                 }
-                const { property, computed } = node;
-                if (!computed) {
-                    if (object.type !== 'object') {
-                        if (triedNestedLabels !== undefined) {
-                            this.error(`Couldn't resolve symbol '${triedNestedLabels}'`, node.loc)
-                        }
-                        this.error(` . operator can only operate on objects. Got ${object.type}.`, node.loc)
+
+                if (object instanceof Array) {
+                    if (!node.computed) {
+                        return this.error(`Cannot use the dot-operator on array values`, node.loc)
                     }
-                    const elt = findObjectField(object.props, property);
-                    if (elt) {
-                        return elt;
-                    }
-                    this.error(`Object has no property '${property}'`, node.loc)
-                } else {
-                    // TODO assert type int
                     const idx = this.evalExpr(node.property);
-                    if (object.type === 'array') {
-                        return this.evalExpr(object.values[idx.lit]);
-                    } else if (object.type === 'object') {
-                        const elt = findObjectField(object.props, idx);
-                        if (elt) {
-                            return elt;
-                        }
-                        this.error(`Object has no property named '${property}'`, node.loc)
+                    if (typeof idx !== 'number') {
+                        return this.error(`Array index must be an integer, got ${typeof idx}`, node.loc);
                     }
-                    this.error('Cannot index a non-array object', object.loc)
+                    if (!(idx in object)) {
+                        return this.error(`Out of bounds array index ${idx}`, node.property.loc)
+                    }
+                    return object[idx];
+                }  else if (typeof object == 'object') {
+                    const checkProp = (obj: any, prop: string|number, loc: SourceLoc) => {
+                        if (!(prop in object)) {
+                            this.error(`Property '${prop}' does not exist in object`, loc);
+                        }
+                    }
+                    if (!node.computed) {
+                        if (node.property.type !== 'ident') {
+                            return this.error(`Object property must be a string, got ${typeof node.property.type}`, node.loc);
+                        }
+                        checkProp(object, node.property.name, node.property.loc);
+                        return object[node.property.name];
+                    } else {
+                        let prop = this.evalExpr(node.property);
+                        if (typeof prop !== 'string' && typeof prop !== 'number') {
+                            return this.error(`Object property must be a string or an integer, got ${typeof prop}`, node.loc);
+                        }
+                        checkProp(object, prop, node.property.loc);
+                        return object[prop];
+                    }
                 }
+
+                // Don't report in first compiler pass because an identifier may
+                // still have been unresolved.  These cases should be reported by
+                // name resolution in pass 1.
+                if (this.pass !== 0) {
+                    if (node.computed) {
+                        return this.error(`Cannot use []-operator on non-array/object values`, node.loc)
+                    } else {
+                        return this.error(`Cannot use the dot-operator on non-object values`, node.loc)
+                    }
+                    return 0;
+                }
+                break;
             }
-*/
             case 'callfunc': {
                 const callee = this.evalExpr(node.name);
                 if (typeof callee !== 'function') {
@@ -801,27 +764,14 @@ class Assembler {
             this.bindFunction(moduleName, pluginModule, node.loc);
         }
         if (typeof pluginModule == 'object') {
+            const moduleObj: any = {};
             const keys = Object.keys(pluginModule);
-            const dstProps = [];
             for (let ki in keys) {
                 const key = keys[ki];
-                const p = pluginModule[key];
-                if (typeof p == 'function') {
-                    const funcName = ast.mkIdent(key, node.loc);
-                    dstProps.push({
-                        key,
-                        val: this.makeFunction(p, node.loc),
-                        loc: node.loc
-                    })
-                } else {
-                    this.error(`All plugin exported symbols must be functions.  Got ${typeof p} for ${key}`, node.loc)
-                }
+                const func = pluginModule[key];
+                moduleObj[key] = this.makeFunction(func, node.loc);
             }
-            this.scopes.declareVar(moduleName.name, {
-                type: 'object',
-                props: dstProps,
-                loc: node.loc
-            });
+            this.scopes.declareVar(moduleName.name, moduleObj);
         }
     }
 
