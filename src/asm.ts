@@ -62,18 +62,19 @@ class NamedScope<T> {
             return this.findSymbol(path[0]);
         }
 
-        // Go up the scope tree until we're now longer at an anonymous
-        // scope.
+        // Go up the scope tree until we find the start of
+        // the relative path.
         let tab: NamedScope<T> | null | undefined = this;
-        while (tab!.name.startsWith('__anon_scope_')) {
+        while (tab.children.get(path[0]) == undefined) {
             tab = tab.parent;
             if (tab == null) {
                 return undefined;
             }
         }
 
+        // Go down the tree to match the path to a symbol
         for (let i = 0; i < path.length-1; i++) {
-            tab = tab!.children.get(path[i]);
+            tab = tab.children.get(path[i]);
             if (tab == undefined) {
                 return undefined;
             }

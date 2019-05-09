@@ -17,7 +17,6 @@ let verbose = false;
 type Test = string;
 
 const blacklist: Test[] = [
-    'test/cases/scopes12.input.asm'
 ];
 
 interface Diagnostic {
