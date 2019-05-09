@@ -24,7 +24,7 @@ class NamedScope<T> {
     syms: Map<string, {val: T, seen: number}> = new Map();
     readonly parent: NamedScope<T> | null = null;
     readonly name: string;
-    private children: Map<string, NamedScope<T>> = new Map();
+    children: Map<string, NamedScope<T>> = new Map();
 
     constructor (parent: NamedScope<T> | null, name: string) {
         this.parent = parent;
@@ -245,15 +245,26 @@ class Scopes {
     }
 
     dumpLabels(codePC: number) {
-        return [];
-        /*
-        const labels = Object.keys(this.labels.labels).map(name => {
-            return {
-                name,
-                ...this.labels.labels[name],
-                size: 0
+        type StackEntry = {prefix: string, sym: NamedScope<SymEntry>};
+        const stack: StackEntry[] = [];
+        const pushScope = (prefix: string, sym: NamedScope<SymEntry>) => {
+            stack.push({ prefix: `${prefix}/${sym.name}`, sym });
+        }
+        pushScope('', this.root);
+
+        const labels = [];
+        while (stack.length > 0) {
+            const s = stack.pop()!;
+            for (let [k,lbl] of s.sym.syms) {
+                if (lbl.val.type == 'label') {
+                    labels.push({ name: `${s.prefix}/${k}`, addr: lbl.val.data.addr, size: 0 });
+                }
             }
-        })
+            for (let [k, sym] of s.sym.children) {
+                pushScope(s.prefix, sym);
+            }
+        }
+
         const sortedLabels = labels.sort((a, b) => {
             return a.addr - b.addr;
         })
@@ -266,9 +277,7 @@ class Scopes {
             const last = sortedLabels[numLabels-1];
             last.size = codePC - last.addr;
         }
-
         return sortedLabels;
-        */
     }
 }
 
@@ -486,7 +495,6 @@ class Assembler {
                 // Namespace qualified ident, like foo::bar::baz
                 const sym = this.scopes.findQualifiedSym(node.path, node.absolute);
                 if (sym == undefined) {
-                    // TODO should this be only for labels??
                     if (this.pass === 1) {
                         this.error(`Undefined symbol '${node.path.join('::')}'`, node.loc)
                     }
@@ -1095,6 +1103,7 @@ export function assemble(filename: string) {
     do {
         asm.startPass(pass);
         asm.assemble(filename, makeCompileLoc(filename));
+
         if (asm.anyErrors()) {
             return {
                 prg: Buffer.from([]),
@@ -1103,6 +1112,7 @@ export function assemble(filename: string) {
                 errors: asm.errors()
             }
         }
+
         const maxPass = 10;
         if (pass > maxPass) {
             console.error(`Exceeded max pass limit ${maxPass}`);
