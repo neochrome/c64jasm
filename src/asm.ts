@@ -301,6 +301,10 @@ function makeCompileLoc(filename: string) {
     };
 }
 
+function formatSymbolPath(p: ast.ScopeQualifiedIdent): string {
+    return `${p.absolute ? '::' : ''}${p.path.join('::')}`;
+}
+
 interface BranchOffset {
     offset: number;
     loc: SourceLoc;
@@ -502,7 +506,7 @@ class Assembler {
                 const sym = this.scopes.findQualifiedSym(node.path, node.absolute);
                 if (sym == undefined) {
                     if (this.pass === 1) {
-                        this.error(`Undefined symbol '${node.path.join('::')}'`, node.loc)
+                        this.error(`Undefined symbol '${formatSymbolPath(node)}'`, node.loc)
                     }
                     // Return a placeholder that should be resolved in the next pass
                     this.needPass = true;
@@ -514,7 +518,7 @@ class Assembler {
                         return sym.sym.data.addr;
                     case 'var':
                         if (sym.seen < this.pass) {
-                            return this.error(`Undeclared variable '${node.path.join('::')}`, node.loc);
+                            return this.error(`Undeclared variable '${formatSymbolPath(node)}`, node.loc);
                         }
                         return sym.sym.data;
                     case 'macro':
@@ -598,8 +602,7 @@ class Assembler {
                     // have a name for it here.  But it's mostly an identifier
                     // so show that just to pass tests for now.
                     const nn = ((node.name) as unknown) as ast.ScopeQualifiedIdent;
-                    const kludgename = nn.path.join('::')
-                    this.error(`Call to '${kludgename}' failed with an error: ${err.message}`, node.loc);
+                    this.error(`Call to '${formatSymbolPath(nn)}' failed with an error: ${err.message}`, node.loc);
                 }
             }
             default:
@@ -873,11 +876,11 @@ class Assembler {
                 const macro = this.scopes.findMacro(name.path, name.absolute);
 
                 if (macro == undefined) {
-                    return this.error(`Undefined macro '${name.path.join('::')}'`, name.loc);
+                    return this.error(`Undefined macro '${formatSymbolPath(name)}'`, name.loc);
                 }
 
                 if (macro.args.length !== args.length) {
-                    this.error(`Macro '${name.path.join('::')}' declared with ${macro.args.length} args but called here with ${args.length}`,
+                    this.error(`Macro '${formatSymbolPath(name)}' declared with ${macro.args.length} args but called here with ${args.length}`,
                         name.loc);
                 }
 
@@ -910,7 +913,7 @@ class Assembler {
                 const name = node.name;
                 const prevValue = this.scopes.findQualifiedVar(node.name.path, node.name.absolute);
                 if (prevValue == undefined) {
-                    return this.error(`Assignment to undeclared variable '${name.path.join('::')}'`, node.loc);
+                    return this.error(`Assignment to undeclared variable '${formatSymbolPath(name)}'`, node.loc);
                 }
                 const evalValue = this.evalExpr(node.value);
                 this.scopes.updateVar(name.path, name.absolute, evalValue);
