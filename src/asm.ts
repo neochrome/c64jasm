@@ -121,10 +121,10 @@ class Scopes {
     curSymtab = this.root;
     private anonScopeCount = 0;
 
-    startPass(): void {
+    startPass(pass: number): void {
         this.curSymtab = this.root;
         this.anonScopeCount = 0;
-        this.passCount += 1;
+        this.passCount = pass;
     }
 
     pushAnonScope(): void {
@@ -399,7 +399,7 @@ class Assembler {
       this.pass = pass;
       this.needPass = false;
       this.binary = [];
-      this.scopes.startPass();
+      this.scopes.startPass(pass);
       this.outOfRangeBranches = [];
       this.debugInfo = new DebugInfoTracker();
     }
