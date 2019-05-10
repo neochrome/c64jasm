@@ -143,29 +143,35 @@ class Scopes {
         this.curSymtab = this.curSymtab.leave();
     }
 
-    findPath(path: string[], absolute: boolean): SymEntry | undefined {
+    findPath(path: string[], absolute: boolean): { sym: SymEntry, seen: number } | undefined {
         if (absolute) {
             const n = this.root.findSymbolPath(path);
             if (n !== undefined) {
-                return n.val;
+                return {
+                    sym: n.val,
+                    seen: n.seen
+                }
             }
             return undefined;
         }
         const n = this.curSymtab.findSymbolPath(path);
         if (n !== undefined) {
-            return n.val;
-        }
+            return {
+                sym: n.val,
+                seen: n.seen
+            }
+    }
         return undefined;
     }
 
-    findQualifiedSym(path: string[], absolute: boolean): SymEntry | undefined {
+    findQualifiedSym(path: string[], absolute: boolean): { sym: SymEntry, seen: number } | undefined {
         return this.findPath(path, absolute);
     }
 
     findQualifiedVar(path: string[], absolute: boolean): any | undefined {
         const se = this.findPath(path, absolute);
-        if (se !== undefined && se.type == 'var') {
-            return se.data;
+        if (se !== undefined && se.sym.type == 'var') {
+            return se.sym.data;
         }
         return undefined;
     }
@@ -231,8 +237,8 @@ class Scopes {
 
     findMacro(path: string[], absolute: boolean): ast.StmtMacro | undefined {
         const sym = this.findPath(path, absolute);
-        if (sym !== undefined && sym.type == 'macro') {
-            return sym.data;
+        if (sym !== undefined && sym.sym.type == 'macro') {
+            return sym.sym.data;
         }
         return undefined;
     }
@@ -502,14 +508,19 @@ class Assembler {
                     this.needPass = true;
                     return 0;
                 }
-                if (sym.type == 'label') {
-                    return sym.data.addr;
-                } else {
-                    if (sym.type !== 'var') {
-                        throw new Error('must see var here');
-                    }
-                    return sym.data;
+
+                switch (sym.sym.type) {
+                    case 'label':
+                        return sym.sym.data.addr;
+                    case 'var':
+                        if (sym.seen < this.pass) {
+                            return this.error(`Undeclared variable '${node.path.join('::')}`, node.loc);
+                        }
+                        return sym.sym.data;
+                    case 'macro':
+                        return this.error(`Must have a label or a variable identifier here, got macro name`, node.loc);
                 }
+                break;
             }
             case 'member': {
                 const object = this.evalExpr(node.object);
@@ -1095,11 +1106,11 @@ class Assembler {
 export function assemble(filename: string) {
     const asm = new Assembler();
     asm.pushSource(filename);
-    asm.registerPlugins();
 
     let pass = 0;
     do {
         asm.startPass(pass);
+        asm.registerPlugins();
         asm.assemble(filename, makeCompileLoc(filename));
 
         if (asm.anyErrors()) {
