@@ -20,6 +20,23 @@ interface LabelAddr {
     loc: SourceLoc
 }
 
+interface EvalValue<T> {
+    value: T;
+    errors: boolean;
+}
+
+function mkErrorValue(v: number) {
+    return { value: v, errors: true };
+}
+
+function mkEvalValue<T>(v: T) {
+    return { value: v, errors: false };
+}
+
+function anyErrors<T>(...args: (EvalValue<T> | undefined)[]) {
+    return args.some(e => e !== undefined && e.errors);
+}
+
 class NamedScope<T> {
     syms: Map<string, T & {seen: number}> = new Map();
     readonly parent: NamedScope<T> | null = null;
@@ -102,12 +119,12 @@ type SymEntry  = SymLabel | SymVar | SymMacro;
 
 interface SymLabel {
     type: 'label';
-    data: LabelAddr;
+    data: EvalValue<LabelAddr>;
 }
 
 interface SymVar {
     type: 'var';
-    data: any;
+    data: EvalValue<any>;
 }
 
 interface SymMacro {
@@ -170,11 +187,11 @@ class Scopes {
         // scopes for label declarations, we end up
         // mutating some unrelated, but same-named label names.
         const prevLabel = this.curSymtab.syms.get(name);
-        const lblsym: SymLabel = {
-            type: 'label',
-            data: { addr: codePC, loc }
-        };
         if (prevLabel == undefined) {
+            const lblsym: SymLabel = {
+                type: 'label',
+                data: mkEvalValue({ addr: codePC, loc })
+            };
             this.curSymtab.addSymbol(name, lblsym, this.passCount);
             return false;
         }
@@ -183,14 +200,24 @@ class Scopes {
         }
         const lbl = prevLabel;
         // If label address has changed change, need one more pass
-        if (lbl.data.addr !== codePC) {
-            this.curSymtab.updateSymbol(name, lblsym, this.passCount);
+        if (lbl.data.value.addr !== codePC) {
+            const newSymValue: SymLabel = {
+                type: 'label',
+                data: {
+                    ...prevLabel.data,
+                    value: {
+                        ...prevLabel.data.value,
+                        addr: codePC
+                    }
+                }
+            }
+            this.curSymtab.updateSymbol(name, newSymValue, this.passCount);
             return true;
         }
         return false;
     }
 
-    declareVar(name: string, value: any): void {
+    declareVar(name: string, value: EvalValue<any>): void {
         this.curSymtab.addSymbol(name, {
             type: 'var',
             data: value
@@ -240,7 +267,7 @@ class Scopes {
             const s = stack.pop()!;
             for (let [k,lbl] of s.sym.syms) {
                 if (lbl.type == 'label') {
-                    labels.push({ name: `${s.prefix}/${k}`, addr: lbl.data.addr, size: 0 });
+                    labels.push({ name: `${s.prefix}/${k}`, addr: lbl.data.value.addr, size: 0 });
                 }
             }
             for (let [k, sym] of s.sym.children) {
@@ -287,13 +314,26 @@ interface BranchOffset {
     loc: SourceLoc;
 }
 
-const runBinopNum = (a: any, b: any, f: (a: number, b: number) => number | boolean) => {
-    // TODO a.type, b.type must be literal
-    const res = f(a as number, b as number);
-    if (typeof res == 'boolean') {
-        return res ? 1 : 0;
+const runBinopNum = (a: EvalValue<number>, b: EvalValue<number>, f: (a: number, b: number) => number | boolean): EvalValue<number> => {
+    if (anyErrors(a, b)) {
+        return mkErrorValue(0);
     }
-    return res;
+    const res = f(a.value as number, b.value as number);
+    if (typeof res == 'boolean') {
+        return mkEvalValue(res ? 1 : 0);
+    }
+    return mkEvalValue(res);
+}
+
+const runUnaryOp = (a: EvalValue<number>, f: (a: number) => number | boolean): EvalValue<number> => {
+    if (anyErrors(a)) {
+        return mkErrorValue(0);
+    }
+    const res = f(a.value as number);
+    if (typeof res == 'boolean') {
+        return mkEvalValue(res ? 1 : 0);
+    }
+    return mkEvalValue(res);
 }
 
 class Assembler {
@@ -374,13 +414,6 @@ class Assembler {
         this.errorList.push({ msg, loc });
     }
 
-    error (msg: string, loc: SourceLoc): never {
-        this.addError(msg, loc);
-        const err = new Error('Compilation failed');
-        err.name = 'semantic';
-        throw err;
-    }
-
     startPass (pass: number): void {
       this.codePC = 0x801;
       this.pass = pass;
@@ -410,28 +443,43 @@ class Assembler {
     }
 
     emitBinary (ast: ast.StmtBinary): void {
-        const { filename } = ast
-        const fname = this.makeSourceRelativePath(this.evalExpr(filename));
-        const buf: Buffer = this.guardedReadFileSync(fname, ast.loc);
+        const { filename } = ast;
+        const evalFname = this.evalExpr(filename);
 
-        let offset = 0
-        let size = buf.byteLength
+        let offset = mkEvalValue(0);
+        let size = undefined;
         if (ast.size !== null) {
             if (ast.offset !== null) {
                 offset = this.evalExpr(ast.offset);
             }
             if (ast.size !== null) {
-                const sizeExprVal = this.evalExpr(ast.size);
-                size = sizeExprVal;
+                size = this.evalExpr(ast.size);
             }
         }
-        // TODO buffer overflow
-        for (let i = 0; i < size; i++) {
-            this.emit(buf.readUInt8(i + offset));
+
+        // Don't try to load or emit anything if there was an error
+        if (anyErrors(evalFname, offset, size)) {
+            return;
+        }
+
+        const fname = this.makeSourceRelativePath(evalFname.value);
+        const buf: Buffer = this.guardedReadFileSync(fname, ast.loc);
+        let numBytes = buf.byteLength;
+        if (size) {
+            numBytes = size.value;
+        }
+
+        if (typeof offset.value !== 'number') {
+            this.addError(`!binary offset field must be numeric, got '${typeof offset.value}'`, ast.offset.loc);
+        } else {
+            // TODO buffer overflow
+            for (let i = 0; i < numBytes; i++) {
+                this.emit(buf.readUInt8(i + offset.value));
+            }
         }
     }
 
-    evalExpr(node: ast.Expr): any {
+    evalExpr(node: ast.Expr): EvalValue<any> {
         switch (node.type) {
             case 'binary': {
                 const left = this.evalExpr(node.left);
@@ -462,18 +510,22 @@ class Assembler {
             case 'unary': {
                 const v = this.evalExpr(node.expr);
                 switch (node.op) {
-                    case '+': return +v;
-                    case '-': return -v;
-                    case '~': return ~v;
+                    case '+': return runUnaryOp(v, v => +v);
+                    case '-': return runUnaryOp(v, v => -v);
+                    case '~': return runUnaryOp(v, v => ~v);
                     default:
                         throw new Error(`Unhandled unary operator ${node.op}`);
                 }
             }
             case 'literal': {
-                return node.lit;
+                return mkEvalValue(node.lit);
             }
             case 'array': {
-                return node.list.map(v => this.evalExpr(v));
+                const evals = node.list.map(v => this.evalExpr(v));
+                return {
+                    value: evals.map(e => e.value),
+                    errors: anyErrors(...evals)
+                }
             }
             case 'ident': {
                 throw new Error('should not see an ident here -- if you do, it is probably a wrong type node in parser')
@@ -483,70 +535,93 @@ class Assembler {
                 const sym = this.scopes.findQualifiedSym(node.path, node.absolute);
                 if (sym == undefined) {
                     if (this.pass === 1) {
-                        this.error(`Undefined symbol '${formatSymbolPath(node)}'`, node.loc)
+                        this.addError(`Undefined symbol '${formatSymbolPath(node)}'`, node.loc)
+                        return mkErrorValue(0);
                     }
                     // Return a placeholder that should be resolved in the next pass
                     this.needPass = true;
-                    return 0;
+                    return mkEvalValue(0);
                 }
 
                 switch (sym.type) {
                     case 'label':
-                        return sym.data.addr;
+                        return {
+                            errors: sym.data.errors,
+                            value: sym.data.value.addr
+                        }
                     case 'var':
                         if (sym.seen < this.pass) {
-                            return this.error(`Undeclared variable '${formatSymbolPath(node)}`, node.loc);
+                            this.addError(`Undeclared variable '${formatSymbolPath(node)}`, node.loc);
                         }
                         return sym.data;
                     case 'macro':
-                        return this.error(`Must have a label or a variable identifier here, got macro name`, node.loc);
+                        // TODO wrong return here, should return evalvalue
+                        this.addError(`Must have a label or a variable identifier here, got macro name`, node.loc);
+                        return mkErrorValue(0);
                 }
                 break;
             }
             case 'member': {
-                const object = this.evalExpr(node.object);
+                // TODO if there are errors, should just return or how to continue??
+                const evaledObject = this.evalExpr(node.object);
+
+                const { value: object } = evaledObject;
 
                 if (object == undefined) {
-                    return this.error(`Cannot access properties of an unresolved symbol'`, node.loc);
+                    this.addError(`Cannot access properties of an unresolved symbol'`, node.loc);
+                    return mkErrorValue(0);
                 }
 
                 const checkProp = (prop: string|number, loc: SourceLoc) => {
                     if (!(prop in object)) {
-                        this.error(`Property '${prop}' does not exist in object`, loc);
+                        this.addError(`Property '${prop}' does not exist in object`, loc);
+                        return false;
                     }
+                    return true;
                 }
 
                 // Eval non-computed access (array, object)
                 const evalProperty = (node: ast.Member, typeName: string) => {
                     if (node.property.type !== 'ident') {
-                        return this.error(`${typeName} property must be a string, got ${typeof node.property.type}`, node.loc);
+                        this.addError(`${typeName} property must be a string, got ${typeof node.property.type}`, node.loc);
+                    } else {
+                        if (checkProp(node.property.name, node.property.loc)) {
+                            return mkEvalValue((object as any)[node.property.name])
+                        }
                     }
-                    checkProp(node.property.name, node.property.loc);
-                    return (object as any)[node.property.name]
+                    return mkErrorValue(0);
                 }
 
                 if (object instanceof Array) {
                     if (!node.computed) {
                         return evalProperty(node, 'Array');
                     }
-                    const idx = this.evalExpr(node.property);
+                    const propEval = this.evalExpr(node.property);
+                    // TODO handle anyerrors in propEval otherwise we'll get error cascade
+                    const { value: idx } = propEval;
                     if (typeof idx !== 'number') {
-                        return this.error(`Array index must be an integer, got ${typeof idx}`, node.loc);
+                        this.addError(`Array index must be an integer, got ${typeof idx}`, node.loc);
+                        return mkErrorValue(0);
                     }
                     if (!(idx in object)) {
-                        return this.error(`Out of bounds array index ${idx}`, node.property.loc)
+                        this.addError(`Out of bounds array index ${idx}`, node.property.loc)
+                        return mkErrorValue(0);
                     }
-                    return object[idx];
+                    return mkEvalValue(object[idx]);
                 }  else if (typeof object == 'object') {
                     if (!node.computed) {
                         return evalProperty(node, 'Object');
                     } else {
-                        let prop = this.evalExpr(node.property);
+                        // TODO prevent error cascade by handling 'errors' field
+                        let { value: prop } = this.evalExpr(node.property);
                         if (typeof prop !== 'string' && typeof prop !== 'number') {
-                            return this.error(`Object property must be a string or an integer, got ${typeof prop}`, node.loc);
+                            this.addError(`Object property must be a string or an integer, got ${typeof prop}`, node.loc);
+                            return mkErrorValue(0);
                         }
-                        checkProp(prop, node.property.loc);
-                        return object[prop];
+                        if (checkProp(prop, node.property.loc)) {
+                            return mkEvalValue(object[prop]);
+                        }
+                        return mkErrorValue(0);
                     }
                 }
 
@@ -555,40 +630,42 @@ class Assembler {
                 // name resolution in pass 1.
                 if (this.pass !== 0) {
                     if (node.computed) {
-                        return this.error(`Cannot use []-operator on non-array/object values`, node.loc)
+                        this.addError(`Cannot use []-operator on non-array/object values`, node.loc)
                     } else {
-                        return this.error(`Cannot use the dot-operator on non-object values`, node.loc)
+                        this.addError(`Cannot use the dot-operator on non-object values`, node.loc)
                     }
-                    return 0;
+                    return mkErrorValue(0);
                 }
-                break;
+                return mkEvalValue(0); // dummy value as we couldn't resolve in pass 0
             }
             case 'callfunc': {
                 const callee = this.evalExpr(node.callee);
-                if (typeof callee !== 'function') {
-                    this.error(`Callee must be a function type.  Got '${typeof callee}'`, node.loc);
+                const argValues = node.args.map(expr => this.evalExpr(expr));
+                if (typeof callee.value !== 'function') {
+                    this.addError(`Callee must be a function type.  Got '${typeof callee}'`, node.loc);
+                    return mkErrorValue(0);
                 }
-                const argValues = [];
-                for (let argIdx = 0; argIdx < node.args.length; argIdx++) {
-                    const e = this.evalExpr(node.args[argIdx]);
-                    argValues.push(e);
+                if (anyErrors(...argValues)) {
+                    return mkErrorValue(0);
                 }
                 try {
-                    return callee(argValues);
+                    return mkEvalValue(callee.value(argValues.map(v => v.value)));
                 } catch(err) {
                     if (node.callee.type == 'qualified-ident') {
-                        this.error(`Call to '${formatSymbolPath(node.callee)}' failed with an error: ${err.message}`, node.loc);
+                        this.addError(`Call to '${formatSymbolPath(node.callee)}' failed with an error: ${err.message}`, node.loc);
                     } else {
                         // Generic error message as callees that are computed
                         // expressions have lost their name once we get here.
-                        this.error(`Plugin call failed with an error: ${err.message}`, node.loc);
+                        this.addError(`Plugin call failed with an error: ${err.message}`, node.loc);
                     }
+                    return mkErrorValue(0);
                 }
             }
             default:
-                throw new Error('unhandled type ' + node.type);
                 break;
         }
+        throw new Error('should be unreachable?');
+        return mkErrorValue(0); // TODO is this even reachable?
     }
 
     emit (byte: number): void {
@@ -614,9 +691,9 @@ class Assembler {
         if (opcode === null || param === null) {
             return false;
         }
-        const eres = this.evalExpr(param);
+        const { value } = this.evalExpr(param);
         this.emit(opcode);
-        this.emit(eres);
+        this.emit(value);
         return true;
     }
 
@@ -624,7 +701,7 @@ class Assembler {
         if (opcode === null || param === null) {
             return false;
         }
-        const v = this.evalExpr(param);
+        const { value: v } = this.evalExpr(param);
         if (bits === 8) {
             if (v < 0 || v >= (1<<bits)) {
                 return false;
@@ -642,7 +719,7 @@ class Assembler {
         if (opcode === null || param === null) {
             return false;
         }
-        const addr = this.evalExpr(param);
+        const { value: addr } = this.evalExpr(param);
         const addrDelta = addr - this.codePC - 2;
         this.emit(opcode);
         if (addrDelta > 0x7f || addrDelta < -128) {
@@ -655,10 +732,10 @@ class Assembler {
       }
 
     setPC (valueExpr: ast.Expr): void {
-        const v = this.evalExpr(valueExpr);
+        const { value: v } = this.evalExpr(valueExpr);
         if (this.codePC > v) {
             // TODO this is not great.  Actually need to track which ranges of memory have something in them.
-            this.error(`Cannot set program counter to a smaller value than current (current: $${toHex16(this.codePC)}, trying to set $${toHex16(v)})`, valueExpr.loc)
+            this.addError(`Cannot set program counter to a smaller value than current (current: $${toHex16(this.codePC)}, trying to set $${toHex16(v)})`, valueExpr.loc)
         }
         while (this.codePC < v) {
             this.emit(0);
@@ -669,12 +746,17 @@ class Assembler {
         try {
             return readFileSync(fname);
         } catch (err) {
-            return this.error(`Couldn't open file '${fname}'`, loc);
+            this.addError(`Couldn't open file '${fname}'`, loc);
+            return Buffer.from([]);
         }
     }
 
     fileInclude (inclStmt: ast.StmtInclude): void {
-        const fname = this.makeSourceRelativePath(this.evalExpr(inclStmt.filename));
+        const fnVal = this.evalExpr(inclStmt.filename);
+        if (anyErrors(fnVal)) {
+            return;
+        }
+        const fname = this.makeSourceRelativePath(fnVal.value);
         this.pushSource(fname);
         this.assemble(fname, inclStmt.loc);
         this.popSource();
@@ -683,25 +765,34 @@ class Assembler {
     fillBytes (n: ast.StmtFill): void {
         const numVals = this.evalExpr(n.numBytes);
         const fillValue = this.evalExpr(n.fillValue);
-        const fv = fillValue;
-        if (fv < 0 || fv >= 256) {
-            this.error(`!fill value to repeat must be in 8-bit range, '${fv}' given`, fillValue.loc);
+
+        if (anyErrors(numVals, fillValue)) {
+            return;
         }
-        for (let i = 0; i < numVals; i++) {
+
+        const { value: fv } = fillValue;
+        if (fv < 0 || fv >= 256) {
+            this.addError(`!fill value to repeat must be in 8-bit range, '${fv}' given`, n.fillValue.loc);
+        }
+        for (let i = 0; i < numVals.value; i++) {
             this.emit(fv);
         }
     }
 
     alignBytes (n: ast.StmtAlign): void {
-        const nb = this.evalExpr(n.alignBytes);
+        const v = this.evalExpr(n.alignBytes);
+        if (anyErrors(v)) {
+            return;
+        }
+        const { value: nb } = v;
         if (typeof nb !== 'number') {
-            this.error(`Alignment must be a number, ${typeof nb} given`, n.alignBytes.loc);
+            this.addError(`Alignment must be a number, ${typeof nb} given`, n.alignBytes.loc);
         }
         if (nb < 1) {
-            this.error(`Alignment must be a positive integer, ${nb} given`, n.alignBytes.loc);
+            this.addError(`Alignment must be a positive integer, ${nb} given`, n.alignBytes.loc);
         }
         if ((nb & (nb-1)) != 0) {
-            this.error(`Alignment must be a power of two, ${nb} given`, n.loc);
+            this.addError(`Alignment must be a power of two, ${nb} given`, n.loc);
         }
         while ((this.codePC & (nb-1)) != 0) {
             this.emit(0);
@@ -735,7 +826,11 @@ class Assembler {
 
     emitData (exprList: ast.Expr[], bits: number) {
         for (let i = 0; i < exprList.length; i++) {
-            const e = this.evalExpr(exprList[i]);
+            const ee = this.evalExpr(exprList[i]);
+            if (anyErrors(ee)) {
+                continue;
+            }
+            const { value: e } = ee;
             if (typeof e == 'number') {
                 this.emit8or16(e, bits);
             } else if (e instanceof Array) {
@@ -744,7 +839,7 @@ class Assembler {
                     this.emit8or16(e[bi], bits);
                 }
             } else {
-                this.error(`Only literal (int constants) or array types can be emitted.  Got ${typeof e}`, exprList[i].loc);
+                this.addError(`Only literal (int constants) or array types can be emitted.  Got ${typeof e}`, exprList[i].loc);
             }
         }
     }
@@ -760,7 +855,7 @@ class Assembler {
     }
 
     bindFunction (name: ast.Ident, pluginModule: any, loc: SourceLoc) {
-        this.scopes.declareVar(name.name, this.makeFunction(pluginModule, loc));
+        this.scopes.declareVar(name.name, mkEvalValue(this.makeFunction(pluginModule, loc)));
     }
 
     bindPlugin (node: ast.StmtLoadPlugin, pluginModule: any) {
@@ -777,7 +872,7 @@ class Assembler {
                 const func = pluginModule[key];
                 moduleObj[key] = this.makeFunction(func, node.loc);
             }
-            this.scopes.declareVar(moduleName.name, moduleObj);
+            this.scopes.declareVar(moduleName.name, mkEvalValue(moduleObj));
         }
     }
 
@@ -808,7 +903,8 @@ class Assembler {
                 break;
             }
             case 'error': {
-                this.error(this.evalExpr(node.error), node.loc);
+                const msg = this.evalExpr(node.error);
+                this.addError(anyErrors(msg) ? "error within !error message expression" : msg.value, node.loc);
                 break;
             }
             case 'if': {
@@ -816,7 +912,8 @@ class Assembler {
                 for (let ci in cases) {
                     const [condExpr, body] = cases[ci];
                     const condition = this.evalExpr(condExpr);
-                    if (isTrueVal(condition)) {
+                    // TODO condition.value type must be numeric/boolean
+                    if (!anyErrors(condition) && isTrueVal(condition.value)) {
                         return this.withAnonScope(localScopeName, () => {
                             this.assembleLines(body);
                         });
@@ -829,9 +926,14 @@ class Assembler {
             }
             case 'for': {
                 const { index, list, body, loc } = node
-                const lst = this.evalExpr(list);
+                const lstVal = this.evalExpr(list);
+                if (anyErrors(lstVal)) {
+                    return;
+                }
+                const { value: lst } = lstVal;
                 if (!(lst instanceof Array)) {
-                    this.error(`for-loop range must be an array expression (e.g., a range() or an array)`, list.loc);
+                    this.addError(`for-loop range must be an array expression (e.g., a range() or an array)`, list.loc);
+                    return;
                 }
                 for (let i = 0; i < lst.length; i++) {
                     let scopeName = null;
@@ -839,8 +941,7 @@ class Assembler {
                         scopeName = `${localScopeName}__${i}`
                     }
                     this.withAnonScope(scopeName, () => {
-                        const value = lst[i];
-                        this.scopes.declareVar(index.name, value);
+                        this.scopes.declareVar(index.name, mkEvalValue(lst[i]));
                         return this.assembleLines(body);
                     });
                 }
@@ -852,28 +953,27 @@ class Assembler {
                 const prevMacro = this.scopes.findMacro([name.name], false);
                 if (prevMacro !== undefined && this.scopes.symbolSeen(name.name)) {
                     // TODO previous declaration from prevMacro
-                    return this.error(`Macro '${name.name}' already defined`, name.loc);
+                    this.addError(`Macro '${name.name}' already defined`, name.loc);
+                    return;
                 }
                 this.scopes.declareMacro(name.name, node);
                 break;
             }
             case 'callmacro': {
-                let argValues: any[] = [];
                 const { name, args } = node;
                 const macro = this.scopes.findMacro(name.path, name.absolute);
 
+                const argValues = args.map(e => this.evalExpr(e));
+
                 if (macro == undefined) {
-                    return this.error(`Undefined macro '${formatSymbolPath(name)}'`, name.loc);
+                    this.addError(`Undefined macro '${formatSymbolPath(name)}'`, name.loc);
+                    return;
                 }
 
                 if (macro.args.length !== args.length) {
-                    this.error(`Macro '${formatSymbolPath(name)}' declared with ${macro.args.length} args but called here with ${args.length}`,
+                    this.addError(`Macro '${formatSymbolPath(name)}' declared with ${macro.args.length} args but called here with ${args.length}`,
                         name.loc);
-                }
-
-                for (let i = 0; i < macro.args.length; i++) {
-                    const eres = this.evalExpr(args[i]);
-                    argValues.push(eres);
+                    return;
                 }
 
                 this.withAnonScope(localScopeName, () => {
@@ -891,7 +991,8 @@ class Assembler {
                 const eres = this.evalExpr(node.value);
 
                 if (sym !== undefined && this.scopes.symbolSeen(name.name)) {
-                    return this.error(`Variable '${name.name}' already defined`, node.loc);
+                    this.addError(`Variable '${name.name}' already defined`, node.loc);
+                    return;
                 }
                 this.scopes.declareVar(name.name, eres);
                 break;
@@ -900,26 +1001,33 @@ class Assembler {
                 const name = node.name;
                 const prevValue = this.scopes.findQualifiedSym(node.name.path, node.name.absolute);
                 if (prevValue == undefined) {
-                    return this.error(`Assignment to undeclared variable '${formatSymbolPath(name)}'`, node.loc);
+                    this.addError(`Assignment to undeclared variable '${formatSymbolPath(name)}'`, node.loc);
+                    return;
                 }
                 if (prevValue.type !== 'var') {
-                    return this.error(`Assignment to symbol '${formatSymbolPath(name)}' that is not a variable.  Its type is '${prevValue.type}'`, node.loc);
+                    this.addError(`Assignment to symbol '${formatSymbolPath(name)}' that is not a variable.  Its type is '${prevValue.type}'`, node.loc);
+                    return;
                 }
                 const evalValue = this.evalExpr(node.value);
                 this.scopes.updateVar(name.path, name.absolute, evalValue);
                 break;
             }
             case 'load-plugin': {
-                const fname = node.filename;
-                const pluginModule = this.requirePlugin(this.evalExpr(fname));
+                const fname = this.evalExpr(node.filename);
+                if (anyErrors(fname)) {
+                    return;
+                }
+                const pluginModule = this.requirePlugin(fname.value);
                 this.bindPlugin(node, pluginModule);
                 break;
             }
             case 'filescope': {
-                this.error(`The !filescope directive is only allowed as the first directive in a source file`, node.loc);
+                this.addError(`The !filescope directive is only allowed as the first directive in a source file`, node.loc);
+                return;
             }
             default:
-                this.error(`unknown directive ${node.type}`, node.loc);
+                this.addError(`unknown directive ${node.type}`, node.loc);
+                return;
         }
     }
 
@@ -970,7 +1078,7 @@ class Assembler {
 
     checkAndDeclareLabel(label: ast.Label) {
         if (this.scopes.symbolSeen(label.name)) {
-            this.error(`Label '${label.name}' already defined`, label.loc);
+            this.addError(`Label '${label.name}' already defined`, label.loc);
         } else {
             const labelChanged = this.scopes.declareLabelSymbol(label, this.codePC);
             if (labelChanged) {
@@ -1060,9 +1168,9 @@ class Assembler {
             if (this.checkBranch(insn.abs, op[11])) {
                 return;
             }
-            this.error(`Couldn't encode instruction '${insn.mnemonic}'`, line.loc);
+            this.addError(`Couldn't encode instruction '${insn.mnemonic}'`, line.loc);
         } else {
-            this.error(`Unknown mnemonic '${insn.mnemonic}'`, line.loc);
+            this.addError(`Unknown mnemonic '${insn.mnemonic}'`, line.loc);
         }
     }
 
@@ -1093,7 +1201,7 @@ class Assembler {
         if (typeof e == type) {
             return e;
         }
-        return this.error(`Expecting a ${type} value, got ${typeof e}`, e.loc);
+        this.addError(`Expecting a ${type} value, got ${typeof e}`, e.loc);
     }
 
     requireString(e: any): (string | never) { return this._requireType(e, 'string') as string; }
@@ -1125,7 +1233,7 @@ class Assembler {
             return Array(end-start).fill(null).map((_,idx) => idx + start);
         };
         const addPlugin = (name: string, handler: any) => {
-            this.scopes.declareVar(name, handler);
+            this.scopes.declareVar(name, mkEvalValue(handler));
         }
         addPlugin('loadJson', json);
         addPlugin('range', range);
