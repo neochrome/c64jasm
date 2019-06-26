@@ -1,0 +1,1 @@
+test/errors/fill1.input.asm:5:7: error: !fill repeat count must be a number, string given

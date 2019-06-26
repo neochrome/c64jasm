@@ -773,8 +773,18 @@ class Assembler {
         const { value: fv } = fillValue;
         if (fv < 0 || fv >= 256) {
             this.addError(`!fill value to repeat must be in 8-bit range, '${fv}' given`, n.fillValue.loc);
+            return;
         }
-        for (let i = 0; i < numVals.value; i++) {
+        const nb = numVals.value;
+        if (typeof nb !== 'number') {
+            this.addError(`!fill repeat count must be a number, ${typeof nb} given`, n.numBytes.loc);
+            return;
+        }
+        if (nb < 0) {
+            this.addError(`!fill repeat count must be >= 0, got ${nb}`, n.numBytes.loc);
+            return;
+        }
+        for (let i = 0; i < nb; i++) {
             this.emit(fv);
         }
     }
