@@ -399,7 +399,10 @@ class Assembler {
     }
 
     errors = () => {
-        return this.errorList.map(({loc, msg}) => {
+        // Remove duplicate errors
+        const set = new Set(this.errorList.map(v => JSON.stringify(v)));
+        return [...set].map((errJson => {
+            const { loc, msg } = JSON.parse(errJson);
             let formatted = `<unknown>:1:1: error: ${msg}`
             if (loc) {
                 formatted = `${loc.source}:${loc.start.line}:${loc.start.column}: error: ${msg}`
@@ -600,7 +603,9 @@ class Assembler {
                         return evalProperty(node, 'Array');
                     }
                     const propEval = this.evalExpr(node.property);
-                    // TODO handle anyerrors in propEval otherwise we'll get error cascade
+                    if (propEval.errors) {
+                        return mkErrorValue(0);
+                    }
                     const { value: idx } = propEval;
                     if (typeof idx !== 'number') {
                         this.addError(`Array index must be an integer, got ${typeof idx}`, node.loc);
@@ -615,8 +620,10 @@ class Assembler {
                     if (!node.computed) {
                         return evalProperty(node, 'Object');
                     } else {
-                        // TODO prevent error cascade by handling 'errors' field
-                        let { value: prop } = this.evalExpr(node.property);
+                        let { errors, value: prop } = this.evalExpr(node.property);
+                        if (errors) {
+                            return mkErrorValue(0);
+                        }
                         if (typeof prop !== 'string' && typeof prop !== 'number') {
                             this.addError(`Object property must be a string or an integer, got ${typeof prop}`, node.loc);
                             return mkErrorValue(0);
@@ -628,14 +635,16 @@ class Assembler {
                     }
                 }
 
-                // Don't report in first compiler pass because an identifier may
+                // Don't report errors in first compiler pass because an identifier may
                 // still have been unresolved.  These cases should be reported by
                 // name resolution in pass 1.
                 if (this.pass !== 0) {
-                    if (node.computed) {
-                        this.addError(`Cannot use []-operator on non-array/object values`, node.loc)
-                    } else {
-                        this.addError(`Cannot use the dot-operator on non-object values`, node.loc)
+                    if (!evaledObject.errors) {
+                        if (node.computed) {
+                            this.addError(`Cannot use []-operator on non-array/object values`, node.loc)
+                        } else {
+                            this.addError(`Cannot use the dot-operator on non-object values`, node.loc)
+                        }
                     }
                     return mkErrorValue(0);
                 }
@@ -644,6 +653,9 @@ class Assembler {
             case 'callfunc': {
                 const callee = this.evalExpr(node.callee);
                 const argValues = node.args.map(expr => this.evalExpr(expr));
+                if (callee.errors) {
+                    return mkErrorValue(0); // suppress further errors if the callee is bonkers
+                }
                 if (typeof callee.value !== 'function') {
                     this.addError(`Callee must be a function type.  Got '${typeof callee}'`, node.loc);
                     return mkErrorValue(0);
