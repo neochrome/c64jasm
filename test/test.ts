@@ -154,7 +154,6 @@ function testErrors(testcase: string) {
     let inputs = g.readdirSync('test/errors/*.input.asm').filter((t: string) => testcase ? t == testcase : true);
 
     const runTest = (fname: string) => {
-        const x = assemble(fname);
         const { errors } = assemble(fname)!;
         const errorMessages = errors.map(e => cleanSyntaxError(e.formatted));
         const errorsFname = path.join(path.dirname(fname), path.basename(fname, 'input.asm') + 'errors.txt');

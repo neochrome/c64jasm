@@ -214,6 +214,8 @@ class Scopes {
             this.curSymtab.updateSymbol(name, newSymValue, this.passCount);
             return true;
         }
+        // Update to mark the label as "seen" in this pass
+        this.curSymtab.updateSymbol(name, prevLabel, this.passCount);
         return false;
     }
 
@@ -419,6 +421,7 @@ class Assembler {
       this.pass = pass;
       this.needPass = false;
       this.binary = [];
+      this.errorList = [];
       this.scopes.startPass(pass);
       this.outOfRangeBranches = [];
       this.debugInfo = new DebugInfoTracker();
@@ -534,7 +537,7 @@ class Assembler {
                 // Namespace qualified ident, like foo::bar::baz
                 const sym = this.scopes.findQualifiedSym(node.path, node.absolute);
                 if (sym == undefined) {
-                    if (this.pass === 1) {
+                    if (this.pass >= 1) {
                         this.addError(`Undefined symbol '${formatSymbolPath(node)}'`, node.loc)
                         return mkErrorValue(0);
                     }
@@ -1272,7 +1275,7 @@ export function assemble(filename: string) {
         asm.registerPlugins();
         asm.assemble(filename, makeCompileLoc(filename));
 
-        if (asm.anyErrors()) {
+        if (pass > 0 && asm.anyErrors()) {
             return {
                 prg: Buffer.from([]),
                 labels: [],
@@ -1295,7 +1298,7 @@ export function assemble(filename: string) {
             }
             break;
         }
-    } while(asm.needPass && !asm.anyErrors());
+    } while(asm.needPass);
 
     asm.popSource();
 
