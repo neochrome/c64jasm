@@ -756,7 +756,12 @@ class Assembler {
         if (anyErrors(fnVal)) {
             return;
         }
-        const fname = this.makeSourceRelativePath(fnVal.value);
+        const v = fnVal.value;
+        if (typeof v !== 'string') {
+            this.addError(`!include filename be a string, got ${typeof v}`, inclStmt.filename.loc);
+            return;
+        }
+        const fname = this.makeSourceRelativePath(v);
         this.pushSource(fname);
         this.assemble(fname, inclStmt.loc);
         this.popSource();

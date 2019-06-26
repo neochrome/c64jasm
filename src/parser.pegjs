@@ -125,7 +125,7 @@ directive =
   / PSEUDO_FILL numBytes:expr COMMA fillValue:expr {
       return ast.mkFill(numBytes, fillValue, loc());
     }
-  / PSEUDO_INCLUDE filename:string {
+  / PSEUDO_INCLUDE filename:expr {
       return ast.mkInclude(filename, loc());
     }
   / PSEUDO_BINARY s:string extra:(COMMA expr? COMMA expr)?  {
