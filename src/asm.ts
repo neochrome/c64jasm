@@ -787,12 +787,15 @@ class Assembler {
         const { value: nb } = v;
         if (typeof nb !== 'number') {
             this.addError(`Alignment must be a number, ${typeof nb} given`, n.alignBytes.loc);
+            return;
         }
         if (nb < 1) {
             this.addError(`Alignment must be a positive integer, ${nb} given`, n.alignBytes.loc);
+            return;
         }
         if ((nb & (nb-1)) != 0) {
             this.addError(`Alignment must be a power of two, ${nb} given`, n.loc);
+            return;
         }
         while ((this.codePC & (nb-1)) != 0) {
             this.emit(0);
