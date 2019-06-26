@@ -401,7 +401,7 @@ class Assembler {
     errors = () => {
         // Remove duplicate errors
         const set = new Set(this.errorList.map(v => JSON.stringify(v)));
-        return [...set].map((errJson => {
+        return [...set].map((errJson) => {
             const { loc, msg } = JSON.parse(errJson);
             let formatted = `<unknown>:1:1: error: ${msg}`
             if (loc) {
