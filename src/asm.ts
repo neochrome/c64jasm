@@ -450,16 +450,16 @@ class Assembler {
 
     emitBinary (ast: ast.StmtBinary): void {
         const { filename } = ast;
-        const evalFname = this.evalExpr(filename);
+        const evalFname = this.evalExprToString(filename, "!binary filename");
 
         let offset = mkEvalValue(0);
         let size = undefined;
         if (ast.size !== null) {
             if (ast.offset !== null) {
-                offset = this.evalExpr(ast.offset);
+                offset = this.evalExprToInt(ast.offset, "!binary offset");
             }
             if (ast.size !== null) {
-                size = this.evalExpr(ast.size);
+                size = this.evalExprToInt(ast.size, "!binary size");
             }
         }
 
@@ -475,14 +475,32 @@ class Assembler {
             numBytes = size.value;
         }
 
-        if (typeof offset.value !== 'number') {
-            this.addError(`!binary offset field must be numeric, got '${typeof offset.value}'`, ast.offset.loc);
-        } else {
-            // TODO buffer overflow
-            for (let i = 0; i < numBytes; i++) {
-                this.emit(buf.readUInt8(i + offset.value));
+        // TODO buffer overflow
+        for (let i = 0; i < numBytes; i++) {
+            this.emit(buf.readUInt8(i + offset.value));
+        }
+    }
+
+    // Type-error checking variant of evalExpr
+    evalExprType<T>(node: ast.Expr, ty: 'number'|'string'|'object', msg: string): EvalValue<T> {
+        const res = this.evalExpr(node);
+        const { errors, value } = res;
+        if (!errors && typeof value !== ty) {
+            this.addError(`Expecting ${msg} to be ${ty}, got '${typeof value}'`, node.loc);
+            return {
+                errors: true, value
             }
         }
+        return res;
+    }
+
+    // Type-error checking variant of evalExpr
+    evalExprToInt(node: ast.Expr, msg: string): EvalValue<number> {
+        return this.evalExprType(node, 'number', msg);
+    }
+
+    evalExprToString(node: ast.Expr, msg: string): EvalValue<string> {
+        return this.evalExprType(node, 'string', msg);
     }
 
     evalExpr(node: ast.Expr): EvalValue<any> {
@@ -706,9 +724,11 @@ class Assembler {
         if (opcode === null || param === null) {
             return false;
         }
-        const { value } = this.evalExpr(param);
-        this.emit(opcode);
-        this.emit(value);
+        const ev = this.evalExprToInt(param, 'immediate');
+        if (!anyErrors(ev)) {
+            this.emit(opcode);
+            this.emit(ev.value);
+        }
         return true;
     }
 
