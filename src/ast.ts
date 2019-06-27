@@ -161,7 +161,7 @@ export interface StmtInclude extends Node {
 
 export interface StmtBinary extends Node {
   type: 'binary';
-  filename: Literal;
+  filename: Expr;
   size: Expr;
   offset: Expr;
 }
@@ -283,7 +283,7 @@ export function mkError(error: Literal, loc: SourceLoc): StmtError {
   }
 }
 
-export function mkBinary(filename: Literal, size: Expr, offset: Expr, loc: SourceLoc): StmtBinary {
+export function mkBinary(filename: Expr, size: Expr, offset: Expr, loc: SourceLoc): StmtBinary {
   return {
     type: 'binary',
     filename,

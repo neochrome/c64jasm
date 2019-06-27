@@ -128,7 +128,7 @@ directive =
   / PSEUDO_INCLUDE filename:expr {
       return ast.mkInclude(filename, loc());
     }
-  / PSEUDO_BINARY s:string extra:(COMMA expr? COMMA expr)?  {
+  / PSEUDO_BINARY s:expr extra:(COMMA expr? COMMA expr)?  {
       let size = null
       let offset = null
       if (extra !== null) {

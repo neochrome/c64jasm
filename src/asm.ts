@@ -33,7 +33,7 @@ function mkEvalValue<T>(v: T) {
     return { value: v, errors: false };
 }
 
-function anyErrors<T>(...args: (EvalValue<T> | undefined)[]) {
+function anyErrors(...args: (EvalValue<any> | undefined)[]) {
     return args.some(e => e !== undefined && e.errors);
 }
 
@@ -486,7 +486,7 @@ class Assembler {
         const res = this.evalExpr(node);
         const { errors, value } = res;
         if (!errors && typeof value !== ty) {
-            this.addError(`Expecting ${msg} to be ${ty}, got '${typeof value}'`, node.loc);
+            this.addError(`Expecting ${msg} to be '${ty}' type, got '${typeof value}'`, node.loc);
             return {
                 errors: true, value
             }
