@@ -582,7 +582,6 @@ class Assembler {
                         }
                         return sym.data;
                     case 'macro':
-                        // TODO wrong return here, should return evalvalue
                         this.addError(`Must have a label or a variable identifier here, got macro name`, node.loc);
                         return mkErrorValue(0);
                 }
@@ -734,7 +733,11 @@ class Assembler {
         if (opcode === null || param === null) {
             return false;
         }
-        const { value: v } = this.evalExpr(param);
+        const ev = this.evalExprToInt(param, 'absolute address');
+        if (anyErrors(ev)) {
+            return true;
+        }
+        const { value: v } = ev;
         if (bits === 8) {
             if (v < 0 || v >= (1<<bits)) {
                 return false;
@@ -752,7 +755,15 @@ class Assembler {
         if (opcode === null || param === null) {
             return false;
         }
-        const { value: addr } = this.evalExpr(param);
+        const ev = this.evalExpr(param);
+        if (anyErrors(ev)) {
+            return true;
+        }
+        if (typeof ev.value !== 'number') {
+            this.addError(`Expecting branch label to evaluate to integer, got ${typeof ev.value}`, param.loc)
+            return true;
+        }
+        const { value: addr } = ev;
         const addrDelta = addr - this.codePC - 2;
         this.emit(opcode);
         if (addrDelta > 0x7f || addrDelta < -128) {
@@ -765,13 +776,16 @@ class Assembler {
       }
 
     setPC (valueExpr: ast.Expr): void {
-        const { value: v } = this.evalExpr(valueExpr);
-        if (this.codePC > v) {
-            // TODO this is not great.  Actually need to track which ranges of memory have something in them.
-            this.addError(`Cannot set program counter to a smaller value than current (current: $${toHex16(this.codePC)}, trying to set $${toHex16(v)})`, valueExpr.loc)
-        }
-        while (this.codePC < v) {
-            this.emit(0);
+        const ev  = this.evalExprToInt(valueExpr, 'pc');
+        if (!anyErrors(ev)) {
+            const { value: v } = ev;
+            if (this.codePC > v) {
+                // TODO this is not great.  Actually need to track which ranges of memory have something in them.
+                this.addError(`Cannot set program counter to a smaller value than current (current: $${toHex16(this.codePC)}, trying to set $${toHex16(v)})`, valueExpr.loc)
+            }
+            while (this.codePC < v) {
+                this.emit(0);
+            }
         }
     }
 
@@ -785,15 +799,11 @@ class Assembler {
     }
 
     fileInclude (inclStmt: ast.StmtInclude): void {
-        const fnVal = this.evalExpr(inclStmt.filename);
+        const fnVal = this.evalExprToString(inclStmt.filename, '!include filename');
         if (anyErrors(fnVal)) {
             return;
         }
         const v = fnVal.value;
-        if (typeof v !== 'string') {
-            this.addError(`!include filename be a string, got ${typeof v}`, inclStmt.filename.loc);
-            return;
-        }
         const fname = this.makeSourceRelativePath(v);
         this.pushSource(fname);
         this.assemble(fname, inclStmt.loc);
@@ -801,9 +811,8 @@ class Assembler {
     }
 
     fillBytes (n: ast.StmtFill): void {
-        const numVals = this.evalExpr(n.numBytes);
-        const fillValue = this.evalExpr(n.fillValue);
-
+        const numVals = this.evalExprToInt(n.numBytes, '!fill num_bytes');
+        const fillValue = this.evalExprToInt(n.fillValue, '!fill value');
         if (anyErrors(numVals, fillValue)) {
             return;
         }
@@ -814,10 +823,6 @@ class Assembler {
             return;
         }
         const nb = numVals.value;
-        if (typeof nb !== 'number') {
-            this.addError(`!fill repeat count must be a number, ${typeof nb} given`, n.numBytes.loc);
-            return;
-        }
         if (nb < 0) {
             this.addError(`!fill repeat count must be >= 0, got ${nb}`, n.numBytes.loc);
             return;
@@ -828,15 +833,11 @@ class Assembler {
     }
 
     alignBytes (n: ast.StmtAlign): void {
-        const v = this.evalExpr(n.alignBytes);
+        const v = this.evalExprToInt(n.alignBytes, 'alignment');
         if (anyErrors(v)) {
             return;
         }
         const { value: nb } = v;
-        if (typeof nb !== 'number') {
-            this.addError(`Alignment must be a number, ${typeof nb} given`, n.alignBytes.loc);
-            return;
-        }
         if (nb < 1) {
             this.addError(`Alignment must be a positive integer, ${nb} given`, n.alignBytes.loc);
             return;
@@ -954,8 +955,11 @@ class Assembler {
                 break;
             }
             case 'error': {
-                const msg = this.evalExpr(node.error);
-                this.addError(anyErrors(msg) ? "error within !error message expression" : msg.value, node.loc);
+                const msg = this.evalExprToString(node.error, 'error message');
+                if (!anyErrors(msg)) {
+                    this.addError(msg.value, node.loc);
+                    return;
+                }
                 break;
             }
             case 'if': {
@@ -1064,7 +1068,7 @@ class Assembler {
                 break;
             }
             case 'load-plugin': {
-                const fname = this.evalExpr(node.filename);
+                const fname = this.evalExprToString(node.filename, 'plugin filename');
                 if (anyErrors(fname)) {
                     return;
                 }
