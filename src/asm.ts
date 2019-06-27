@@ -532,7 +532,10 @@ class Assembler {
                 }
             }
             case 'unary': {
-                const v = this.evalExpr(node.expr);
+                const v = this.evalExprToInt(node.expr, 'operand');
+                if (v.errors) {
+                    return v;
+                }
                 switch (node.op) {
                     case '+': return runUnaryOp(v, v => +v);
                     case '-': return runUnaryOp(v, v => -v);
@@ -620,13 +623,8 @@ class Assembler {
                     if (!node.computed) {
                         return evalProperty(node, 'Array');
                     }
-                    const propEval = this.evalExpr(node.property);
-                    if (propEval.errors) {
-                        return mkErrorValue(0);
-                    }
-                    const { value: idx } = propEval;
-                    if (typeof idx !== 'number') {
-                        this.addError(`Array index must be an integer, got ${typeof idx}`, node.loc);
+                    const { errors, value: idx } = this.evalExprToInt(node.property, 'array index');
+                    if (errors) {
                         return mkErrorValue(0);
                     }
                     if (!(idx in object)) {
