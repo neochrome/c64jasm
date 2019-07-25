@@ -360,6 +360,7 @@ primary
   / ident:scopeQualifiedIdentifier { return ident; }
   / string:string                  { return string; }
   / arrayLiteral
+  / objectLiteral
   / LPAR e:lastExpr RPAR           { return e; }
 
 num =
@@ -399,6 +400,30 @@ arrayLiteral =
   LBRK elts:exprList? RBRK {
     return ast.mkExprArray(elts === null ? [] : elts, loc());
   }
+
+objectLiteral
+  = LWING RWING {
+      return ast.mkExprObject([], loc());
+    }
+  / LWING properties:PropertyNameAndValueList __ RWING {
+       return ast.mkExprObject(properties, loc());
+     }
+  / LWING properties:PropertyNameAndValueList COMMA RWING {
+       return ast.mkExprObject(properties, loc());
+     }
+PropertyNameAndValueList
+  = head:PropertyAssignment tail:(COMMA PropertyAssignment)* {
+      return buildList(head, tail, 3);
+    }
+
+PropertyAssignment
+  = key:PropertyName COLON val:expr  {
+      return { key, val };
+    }
+
+// Real JavaScript supports also num and string here.. TODO?
+PropertyName = identifier / string / num
+
 
 alpha = [a-zA-Z_]
 alphanum = [a-zA-Z_0-9]

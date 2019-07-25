@@ -1,3 +1,4 @@
+import { AssertionError } from "assert";
 
 export interface Loc {
   offset: number,
@@ -53,6 +54,11 @@ export interface ExprArray extends Node {
   list: Expr[];
 }
 
+export interface ExprObject extends Node {
+    type: 'object';
+    props: { key: Ident, val: Expr }[];
+};
+
 export interface CallFunc extends Node {
   type: 'callfunc';
   callee: Expr;
@@ -88,6 +94,10 @@ export function mkBinaryOp(op: string, left: Expr, right: Expr, loc: SourceLoc):
 
 export function mkExprArray(list: Expr[], loc: SourceLoc): ExprArray {
   return { type: 'array', list, loc };
+}
+
+export function mkExprObject(props: { key: Ident, val: Expr }[], loc: SourceLoc): ExprObject {
+  return { type: 'object', props, loc };
 }
 
 export function mkCallFunc(callee: Expr, args: Expr[], loc: SourceLoc): CallFunc {
@@ -377,31 +387,4 @@ export function mkAsmLine(
     loc: SourceLoc
   ): AsmLine {
   return { label, stmt, scopedStmts, loc };
-}
-
-// Convert a Javascript object to AST nodes
-export function objectToAst(o: any, loc: SourceLoc): any {
-    if (Array.isArray(o)) {
-      return {
-        type: 'array',
-        values: o.map(e => objectToAst(e, loc)),
-        loc
-      }
-    }
-    if (typeof o === 'object') {
-      return {
-        type: 'object',
-        props: Object.keys(o).map(k => {
-          return { key: k, val: objectToAst(o[k], loc) };
-        }),
-        loc
-      }
-    }
-    if (typeof o === 'number') {
-      return mkLiteral(o, loc);
-    }
-    if (typeof o === 'string') {
-      return mkLiteral(o, loc);
-    }
-    return undefined;
 }
